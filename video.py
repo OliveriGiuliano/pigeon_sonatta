@@ -6,7 +6,6 @@ import time
 import atexit
 import os
 import cv2
-import numpy as np
 
 class VideoManager:
     """
