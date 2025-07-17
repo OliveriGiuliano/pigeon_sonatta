@@ -9,6 +9,8 @@ import time
 from video import VideoManager  # Your VLC wrapper
 from audio import AudioGenerator  # Your audio generator
 
+from scales import get_available_scales, get_note_names
+
 class MainWindow(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -25,9 +27,9 @@ class MainWindow(tk.Tk):
         self.current_soundfont = None
         
         # Grid settings
-        self.grid_width = 4
-        self.grid_height = 3
-        self.note_range = (50, 62)
+        self.grid_width = 20
+        self.grid_height = 1
+        self.note_range = (40, 85)
         
         # Frame processing
         self.frame_processing_thread = None
@@ -35,6 +37,9 @@ class MainWindow(tk.Tk):
         
         # UI Variables
         self.audio_enabled_var = tk.BooleanVar(value=False)
+
+        self.current_scale = "Pentatonic Major"
+        self.current_root_note = 60
 
         self._create_menu()
         self._create_main_layout()
@@ -191,11 +196,11 @@ class MainWindow(tk.Tk):
         self.grid_height_var = tk.StringVar(value=str(self.grid_height))
         
         ttk.Label(grid_size_frame, text="Width:").pack(side=tk.LEFT, padx=(10, 0))
-        width_spinbox = ttk.Spinbox(grid_size_frame, from_=1, to=50, width=5, textvariable=self.grid_width_var, command=self.update_grid_settings)
+        width_spinbox = ttk.Spinbox(grid_size_frame, from_=1, to=127, width=5, textvariable=self.grid_width_var, command=self.update_grid_settings)
         width_spinbox.pack(side=tk.LEFT, padx=5)
 
         ttk.Label(grid_size_frame, text="Height:").pack(side=tk.LEFT, padx=(10, 0))
-        height_spinbox = ttk.Spinbox(grid_size_frame, from_=1, to=50, width=5, textvariable=self.grid_height_var, command=self.update_grid_settings)
+        height_spinbox = ttk.Spinbox(grid_size_frame, from_=1, to=127, width=5, textvariable=self.grid_height_var, command=self.update_grid_settings)
         height_spinbox.pack(side=tk.LEFT, padx=5)
                 
         # Note range
@@ -219,6 +224,23 @@ class MainWindow(tk.Tk):
         self.min_note_var.trace('w', lambda name, index, mode: self.update_grid_settings())
         self.max_note_var.trace('w', lambda name, index, mode: self.update_grid_settings())
         
+        # Scale settings
+        scale_frame = ttk.Frame(grid_group)
+        scale_frame.pack(pady=5, fill="x")
+        ttk.Label(scale_frame, text="Scale:").pack(side=tk.LEFT)
+
+        self.scale_var = tk.StringVar(value=self.current_scale)
+        scale_combo = ttk.Combobox(scale_frame, textvariable=self.scale_var, values=get_available_scales(), state="readonly", width=15)
+        scale_combo.pack(side=tk.LEFT, padx=5)
+        scale_combo.bind("<<ComboboxSelected>>", self.on_scale_change)
+
+        ttk.Label(scale_frame, text="Root:").pack(side=tk.LEFT, padx=(10, 0))
+        self.root_note_var = tk.StringVar(value="C")
+        note_names = get_note_names()
+        root_combo = ttk.Combobox(scale_frame, textvariable=self.root_note_var, values=note_names, state="readonly", width=5)
+        root_combo.pack(side=tk.LEFT, padx=5)
+        root_combo.bind("<<ComboboxSelected>>", self.on_root_note_change)
+
         # Display settings
         display_group = ttk.LabelFrame(scrollable_frame, text="Display Settings")
         display_group.pack(pady=10, padx=10, fill="x")
@@ -235,6 +257,9 @@ class MainWindow(tk.Tk):
         
         self.notes_info_label = ttk.Label(status_group, text=f"Notes: {self.note_range[0]}-{self.note_range[1]}")
         self.notes_info_label.pack(pady=2)
+
+        self.scale_info_label = ttk.Label(status_group, text=f"Scale: {self.current_scale} ({self.root_note_var.get() if hasattr(self, 'root_note_var') else 'C'})")
+        self.scale_info_label.pack(pady=2)
         
         paned.add(control_frame, weight=1)
 
@@ -256,7 +281,9 @@ class MainWindow(tk.Tk):
                 grid_width=self.grid_width,
                 grid_height=self.grid_height,
                 note_range=self.note_range,
-                soundfont_path=self.current_soundfont
+                soundfont_path=self.current_soundfont,
+                scale_name=self.current_scale,
+                root_note=self.current_root_note
             )
             self.audio_status_label.config(text="Audio: Initialized")
         except Exception as e:
@@ -459,10 +486,10 @@ class MainWindow(tk.Tk):
             new_max_note = int(self.max_note_var.get())
             
             # Validate values
-            if new_width < 1 or new_width > 50:
-                raise ValueError("Grid width must be between 1 and 8")
-            if new_height < 1 or new_height > 50:
-                raise ValueError("Grid height must be between 1 and 8")
+            if new_width < 1 or new_width > 127:
+                raise ValueError("Grid width must be between 1 and 127")
+            if new_height < 1 or new_height > 127:
+                raise ValueError("Grid height must be between 1 and 127")
             if new_min_note < 0 or new_min_note > 127:
                 raise ValueError("Min note must be between 0 and 127")
             if new_max_note < 0 or new_max_note > 127:
@@ -572,6 +599,29 @@ class MainWindow(tk.Tk):
 
         # Schedule next update
         self.after(int(1000/30), self._update_grid_overlay)
+
+    def on_scale_change(self, event=None):
+        """Handle scale selection change."""
+        self.current_scale = self.scale_var.get()
+        self.update_scale_settings()
+
+    def on_root_note_change(self, event=None):
+        """Handle root note selection change."""
+        note_name = self.root_note_var.get()
+        note_names = get_note_names()
+        if note_name in note_names:
+            # Convert note name to MIDI note number (C4 = 60)
+            self.current_root_note = 60 + note_names.index(note_name)
+        self.update_scale_settings()
+
+    def update_scale_settings(self):
+        """Update scale settings in audio generator."""
+        if self.audio_generator:
+            self.audio_generator.set_scale(self.current_scale, self.current_root_note)
+        
+        # Update status label
+        root_name = self.root_note_var.get() if hasattr(self, 'root_note_var') else 'C'
+        self.scale_info_label.config(text=f"Scale: {self.current_scale} ({root_name})")
 
     def cleanup(self):
         """Clean up resources."""

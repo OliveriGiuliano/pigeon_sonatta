@@ -4,15 +4,14 @@ import cv2
 import pygame
 import pygame.midi
 import threading
-import time
-from collections import defaultdict
 import os
+from scales import generate_scale_notes, get_available_scales
 
 class AudioGenerator:
     """
     Generates MIDI instructions from video frames and synthesizes audio using soundfonts.
     """
-    def __init__(self, grid_width=4, grid_height=3, note_range=(50, 62), soundfont_path=None):
+    def __init__(self, grid_width=4, grid_height=3, note_range=(0, 127), soundfont_path=None, scale_name="Pentatonic Major", root_note=60):
         """
         Initialize the audio generator.
         
@@ -26,6 +25,9 @@ class AudioGenerator:
         self.grid_height = grid_height
         self.note_range = note_range
         self.soundfont_path = soundfont_path
+
+        self.scale_name = scale_name
+        self.root_note = root_note
         
         # Calculate total regions and note mapping
         self.total_regions = grid_width * grid_height
@@ -45,19 +47,34 @@ class AudioGenerator:
         self._initialize_audio()
     
     def _create_note_map(self):
-        """Create mapping from grid regions to MIDI notes."""
+        """Create mapping from grid regions to scale notes."""
         note_map = {}
-        min_note, max_note = self.note_range
-        note_span = max_note - min_note
         
+        # Generate scale notes within the note range
+        scale_notes = generate_scale_notes(self.root_note, self.scale_name, self.note_range)
+        
+        if not scale_notes:
+            # Fallback to chromatic if no scale notes found
+            min_note, max_note = self.note_range
+            scale_notes = list(range(min_note, max_note + 1))
+        
+        # Map grid regions to scale notes (cycle through scale if needed)
         for i in range(self.total_regions):
-            if self.total_regions == 1:
-                note = min_note
-            else:
-                note = min_note + int((i / (self.total_regions - 1)) * note_span)
-            note_map[i] = note
-            
+            note_index = i % len(scale_notes)
+            note_map[i] = scale_notes[note_index]
+        
         return note_map
+    
+    def set_scale(self, scale_name, root_note):
+        """Change scale and root note, recalculate note mapping."""
+        self.scale_name = scale_name
+        self.root_note = root_note
+        self.note_map = self._create_note_map()
+        self.stop_all_notes()  # Stop current notes as mapping changed
+
+    def get_available_scales(self):
+        """Return list of available scales."""
+        return get_available_scales()
     
     def _initialize_audio(self):
         """Initialize pygame mixer and MIDI output."""
