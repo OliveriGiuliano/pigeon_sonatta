@@ -1,4 +1,3 @@
-# video.py
 import tkinter as tk
 import vlc
 import threading
