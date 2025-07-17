@@ -34,22 +34,16 @@ class MainWindow(tk.Tk):
         self.stop_frame_processing = False
         
         # UI Variables
-        self.show_grid = tk.BooleanVar(value=True)
         self.audio_enabled_var = tk.BooleanVar(value=False)
 
         self._create_menu()
         self._create_main_layout()
         self._create_status_bar()
+
+        self._update_grid_overlay()
         
         # Initialize audio generator
         self._init_audio_generator()
-
-        # create overlay canvas on top of the VLC panel
-        self.overlay = tk.Canvas(self.video_frame,
-                                highlightthickness=0)
-        self.overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
-        self.toggle_grid_display()
-
         
         # Register cleanup
         atexit.register(self.cleanup)
@@ -95,7 +89,6 @@ class MainWindow(tk.Tk):
         # View menu
         view_menu = tk.Menu(menubar, tearoff=0)
         view_menu.add_command(label="Show Visual Feedback", command=self._menu_action)
-        view_menu.add_checkbutton(label="Show Grid", variable=self.show_grid, command=self.toggle_grid_display)
         view_menu.add_command(label="Show Filter Preview", command=self._menu_action)
         view_menu.add_command(label="Fullscreen Video", command=self._menu_action)
         menubar.add_cascade(label="View", menu=view_menu)
@@ -112,14 +105,29 @@ class MainWindow(tk.Tk):
         paned = ttk.Panedwindow(self, orient=tk.HORIZONTAL)
         paned.pack(fill=tk.BOTH, expand=True)
 
-        # Video display frame (will host VLC)
-        self.video_frame = ttk.Frame(paned, relief=tk.SUNKEN) # outer container to display overlays
+        # Video display frame - now split into video and grid
+        self.video_frame = ttk.Frame(paned, relief=tk.SUNKEN)
         self.video_frame.config(width=500, height=400)
         self.video_frame.pack_propagate(False)
         paned.add(self.video_frame, weight=3)
-        self.video_panel = ttk.Frame(self.video_frame) # inner frame for vlc to draw into
-        self.video_panel.place(relx=0, rely=0, relwidth=1, relheight=1)
+        
+        # Split the video frame vertically
+        video_paned = ttk.Panedwindow(self.video_frame, orient=tk.VERTICAL)
+        video_paned.pack(fill=tk.BOTH, expand=True)
+        
+        # Top part: VLC video panel (70% of height)
+        self.video_panel = ttk.Frame(video_paned)
+        video_paned.add(self.video_panel, weight=7)
+        
+        # Bottom part: Grid display (30% of height)
+        self.grid_frame = ttk.Frame(video_paned, relief=tk.SUNKEN)
+        video_paned.add(self.grid_frame, weight=3)
+        
+        # Create grid canvas in the bottom part
+        self.grid_canvas = tk.Canvas(self.grid_frame, highlightthickness=0)
+        self.grid_canvas.pack(fill=tk.BOTH, expand=True)
 
+        # Rest of the method remains the same...
         # Control panel frame
         control_frame = ttk.Frame(paned, relief=tk.RAISED)
         control_frame.config(width=400)
@@ -183,15 +191,13 @@ class MainWindow(tk.Tk):
         self.grid_height_var = tk.StringVar(value=str(self.grid_height))
         
         ttk.Label(grid_size_frame, text="Width:").pack(side=tk.LEFT, padx=(10, 0))
-        width_spinbox = ttk.Spinbox(grid_size_frame, from_=1, to=50, width=5, textvariable=self.grid_width_var)
+        width_spinbox = ttk.Spinbox(grid_size_frame, from_=1, to=50, width=5, textvariable=self.grid_width_var, command=self.update_grid_settings)
         width_spinbox.pack(side=tk.LEFT, padx=5)
-        
+
         ttk.Label(grid_size_frame, text="Height:").pack(side=tk.LEFT, padx=(10, 0))
-        height_spinbox = ttk.Spinbox(grid_size_frame, from_=1, to=50, width=5, textvariable=self.grid_height_var)
+        height_spinbox = ttk.Spinbox(grid_size_frame, from_=1, to=50, width=5, textvariable=self.grid_height_var, command=self.update_grid_settings)
         height_spinbox.pack(side=tk.LEFT, padx=5)
-        
-        ttk.Button(grid_size_frame, text="Apply", command=self.update_grid_settings).pack(side=tk.LEFT, padx=10)
-        
+                
         # Note range
         note_range_frame = ttk.Frame(grid_group)
         note_range_frame.pack(pady=5, fill="x")
@@ -201,19 +207,21 @@ class MainWindow(tk.Tk):
         self.max_note_var = tk.StringVar(value=str(self.note_range[1]))
         
         ttk.Label(note_range_frame, text="Min:").pack(side=tk.LEFT, padx=(10, 0))
-        min_spinbox = ttk.Spinbox(note_range_frame, from_=0, to=127, width=5, textvariable=self.min_note_var)
+        min_spinbox = ttk.Spinbox(note_range_frame, from_=0, to=127, width=5, textvariable=self.min_note_var, command=self.update_grid_settings)
         min_spinbox.pack(side=tk.LEFT, padx=5)
-        
+
         ttk.Label(note_range_frame, text="Max:").pack(side=tk.LEFT, padx=(10, 0))
-        max_spinbox = ttk.Spinbox(note_range_frame, from_=0, to=127, width=5, textvariable=self.max_note_var)
+        max_spinbox = ttk.Spinbox(note_range_frame, from_=0, to=127, width=5, textvariable=self.max_note_var, command=self.update_grid_settings)
         max_spinbox.pack(side=tk.LEFT, padx=5)
+
+        self.grid_width_var.trace('w', lambda name, index, mode: self.update_grid_settings())
+        self.grid_height_var.trace('w', lambda name, index, mode: self.update_grid_settings())
+        self.min_note_var.trace('w', lambda name, index, mode: self.update_grid_settings())
+        self.max_note_var.trace('w', lambda name, index, mode: self.update_grid_settings())
         
         # Display settings
         display_group = ttk.LabelFrame(scrollable_frame, text="Display Settings")
         display_group.pack(pady=10, padx=10, fill="x")
-        
-        ttk.Checkbutton(display_group, text="Show Grid Overlay", 
-                       variable=self.show_grid, command=self.toggle_grid_display).pack(pady=5)
         
         # Status info
         status_group = ttk.LabelFrame(scrollable_frame, text="Status")
@@ -479,22 +487,6 @@ class MainWindow(tk.Tk):
         except ValueError as e:
             messagebox.showerror("Invalid Settings", str(e))
 
-    def toggle_grid_display(self):
-        """Show or hide the grid‐overlay canvas and start/stop its redraw loop."""
-        if self.show_grid.get():
-            # show it (it was already placed in __init__, so this just makes it visible)
-            self.overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
-            # kick off the drawing loop
-            self._update_grid_overlay()
-        else:
-            # stop drawing by clearing any pending callbacks
-            # (we’ll simply let them no-op when show_grid is False)
-            # clear all shapes
-            self.overlay.delete("all")
-            # hide the canvas so it doesn't intercept mouse events
-            self.overlay.place_forget()
-
-
     def _update_stats(self):
         if self.vlc_manager and self.vlc_manager.is_playing():
             t = self.vlc_manager.get_time()
@@ -503,45 +495,83 @@ class MainWindow(tk.Tk):
             self.after(100, self._update_stats)
 
     def _update_grid_overlay(self):
-        """Re-draw grid lines and flashing notes on the overlay Canvas."""
-        if not self.show_grid.get():
-            return
+        """Re-draw grid lines and flashing notes on the grid Canvas."""
 
         # Clear previous drawings
-        self.overlay.delete("all")
+        self.grid_canvas.delete("all")
 
-        w = self.video_frame.winfo_width()
-        h = self.video_frame.winfo_height()
+        w = self.grid_canvas.winfo_width()
+        h = self.grid_canvas.winfo_height()
+        
+        # Make sure we have valid dimensions
+        if w <= 1 or h <= 1:
+            self.after(100, self._update_grid_overlay)
+            return
+        
         gw, gh = self.grid_width, self.grid_height
         cell_w, cell_h = w//gw, h//gh
 
-        # draw static grid lines
+        # Draw grid lines
         for i in range(1, gw):
-            x = i*cell_w
-            self.overlay.create_line(x, 0, x, h, width=2)
+            x = i * cell_w
+            self.grid_canvas.create_line(x, 0, x, h, fill='white', width=2)
         for j in range(1, gh):
-            y = j*cell_h
-            self.overlay.create_line(0, y, w, y, width=2)
+            y = j * cell_h
+            self.grid_canvas.create_line(0, y, w, y, fill='white', width=2)
 
-        # flash any currently‑playing notes
-        # AudioGenerator keeps track of self.current_notes: {note:velocity}
-        # we need region index → note mapping
-        for region_index, note in self.audio_generator.note_map.items():
-            if note in self.audio_generator.current_notes:
-                # compute row/col
+        # Draw outer border
+        self.grid_canvas.create_rectangle(0, 0, w, h, outline='white', width=2, fill='')
+
+        # Flash any currently playing notes with velocity-based color
+        if self.audio_generator:
+            for region_index, note in self.audio_generator.note_map.items():
+                if note in self.audio_generator.current_notes:
+                    # Get the velocity for this note
+                    velocity = self.audio_generator.current_notes[note]
+                    
+                    # Convert velocity (0-127) to color intensity (0-255)
+                    intensity = int((velocity / 127.0) * 255)
+                    
+                    # Create pink color based on intensity (pale pink to bright pink)
+                    # Pink is achieved by high red, varying green, and high blue
+                    red = 255  # Always full red for pink
+                    green = max(0, intensity)  # Minimum green for pale pink, increases with intensity
+                    blue = 255  # Always full blue for pink
+                    
+                    color = f"#{red:02x}{green:02x}{blue:02x}"
+                    outline_color = f"#{255:02x}{min(255, green + 30):02x}{255:02x}"  # Slightly brighter outline
+                    
+                    # Compute row/col
+                    row = region_index // gw
+                    col = region_index % gw
+                    x1, y1 = col * cell_w, row * cell_h
+                    x2, y2 = x1 + cell_w, y1 + cell_h
+                    
+                    # Draw a colored rectangle for active notes
+                    self.grid_canvas.create_rectangle(
+                        x1 + 2, y1 + 2, x2 - 2, y2 - 2,
+                        fill=color, outline=outline_color, width=2
+                    )
+            
+            # Draw note labels
+            for region_index, note in self.audio_generator.note_map.items():
                 row = region_index // gw
-                col = region_index %  gw
-                x1, y1 = col*cell_w, row*cell_h
-                x2, y2 = x1+cell_w, y1+cell_h
-                # draw a semi‑transparent flash (simulate with a stipple)
-                self.overlay.create_rectangle(
-                    x1, y1, x2, y2,
-                    fill='yellow', stipple='gray50', outline=''
-                )
+                col = region_index % gw
+                x = col * cell_w + cell_w // 2
+                y = row * cell_h + cell_h // 2
+                
+                # Determine text color based on note state
+                if note in self.audio_generator.current_notes:
+                    text_color = 'white'  # White text on pink background
+                else:
+                    text_color = '#888888'  # Dark grey text for inactive notes
+                
+                # Note number only (removed the "ON" status)
+                self.grid_canvas.create_text(x, y, text=f"N{note}", 
+                                        fill=text_color, font=('Arial', 10, 'bold'))
 
-        # schedule next update
+        # Schedule next update
         self.after(int(1000/30), self._update_grid_overlay)
-
 
     def cleanup(self):
         """Clean up resources."""
