@@ -42,6 +42,10 @@ class AudioGenerator:
         # Processing state
         self.is_processing = False
         self.processing_thread = None
+
+        self.note_on_threshold = 0.1   # 0 to 1
+        self.note_off_threshold = 0.05
+        self.change_velocity_threshold = 10 # 0 to 127
         
         # Initialize pygame mixer for soundfont playback
         self._initialize_audio()
@@ -155,7 +159,7 @@ class AudioGenerator:
         
         Args:
             brightness_values (dict): {region_index: brightness_value}
-            velocity_threshold (float): Minimum brightness to trigger note
+            velocity_threshold (float): DEPRECATED, Minimum brightness to trigger note 
             
         Returns:
             list: MIDI events [(action, note, velocity), ...]
@@ -171,7 +175,8 @@ class AudioGenerator:
                 velocity = self.brightness_to_velocity(brightness)
                 
                 # Check if note should be playing
-                should_play = brightness > velocity_threshold
+                should_play = brightness > self.note_on_threshold
+                should_stop = brightness > self.note_off_threshold
                 is_playing = note in self.current_notes
                 
                 if should_play and not is_playing:
@@ -182,12 +187,12 @@ class AudioGenerator:
                 elif should_play and is_playing:
                     # Update velocity if significantly different
                     current_velocity = self.current_notes[note]
-                    if abs(velocity - current_velocity) > 10:  # Threshold for velocity change
+                    if abs(velocity - current_velocity) > self.change_velocity_threshold:  # Threshold for velocity change
                         midi_events.append(('note_off', note, current_velocity))
                         midi_events.append(('note_on', note, velocity))
                         self.current_notes[note] = velocity
                         
-                elif not should_play and is_playing:
+                elif should_stop and is_playing:
                     # Stop note
                     midi_events.append(('note_off', note, self.current_notes[note]))
                     del self.current_notes[note]
