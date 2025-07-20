@@ -114,45 +114,35 @@ class AudioGenerator:
     
     def analyze_frame(self, frame):
         """
-        Analyze a video frame and extract brightness values for each grid region.
-        
+        Analyzes a video frame and extracts brightness values for each grid region.
+        This optimized version expects a GRAYSCALE frame.
+
         Args:
-            frame: OpenCV frame (BGR format)
-            
+            frame: OpenCV frame (single-channel grayscale format)
+
         Returns:
             dict: {region_index: brightness_value}
         """
         if frame is None:
             return {}
-        
-        # Convert to grayscale for brightness analysis
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        height, width = gray.shape
-        
-        # Calculate region dimensions
-        region_width = width // self.grid_width
-        region_height = height // self.grid_height
-        
+
+        # Resize the entire grayscale frame to the grid dimensions in one go.
+        # cv2.INTER_AREA is efficient for downscaling.
+        resized = cv2.resize(frame, (self.grid_width, self.grid_height), interpolation=cv2.INTER_AREA)
+
         brightness_values = {}
-        
-        for row in range(self.grid_height):
-            for col in range(self.grid_width):
-                # Calculate region boundaries
-                y1 = row * region_height
-                y2 = (row + 1) * region_height if row < self.grid_height - 1 else height
-                x1 = col * region_width
-                x2 = (col + 1) * region_width if col < self.grid_width - 1 else width
-                
-                # Extract region
-                region = gray[y1:y2, x1:x2]
-                
-                # Calculate average brightness (0-255) and normalize to (0-1)
-                brightness = np.mean(region) / 255.0
-                
-                # Convert to region index
-                region_index = row * self.grid_width + col
-                brightness_values[region_index] = brightness
-        
+        total_regions = self.grid_width * self.grid_height
+
+        # Read the brightness values directly from the resized image.
+        # The values are already the "average" for their respective regions.
+        for i in range(total_regions):
+            row = i // self.grid_width
+            col = i % self.grid_width
+            
+            # Normalize brightness from 0-255 to 0.0-1.0
+            brightness = resized[row, col] / 255.0
+            brightness_values[i] = brightness
+
         return brightness_values
     
     def brightness_to_velocity(self, brightness):

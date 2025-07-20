@@ -5,8 +5,8 @@ import os
 import threading
 import time
 
-from video import VideoManager  # Your VLC wrapper
-from audio import AudioGenerator  # Your audio generator
+from video import VideoManager  
+from audio import AudioGenerator 
 
 from scales import get_available_scales, get_note_names
 
@@ -16,8 +16,7 @@ class MainWindow(tk.Tk):
         self.title("Video-to-MIDI Generator")
         self.geometry("900x700")
 
-        # VLC manager will be initialized once we have the video panel
-        self.vlc_manager = None
+        self.video_manager = None
         self.current_video_path = None
         
         # Audio generator
@@ -119,8 +118,8 @@ class MainWindow(tk.Tk):
         video_paned = ttk.Panedwindow(self.video_frame, orient=tk.VERTICAL)
         video_paned.pack(fill=tk.BOTH, expand=True)
         
-        # Top part: VLC video panel (70% of height)
-        self.video_panel = ttk.Frame(video_paned)
+        # Top part: video panel (70% of height)
+        self.video_panel = tk.Label(video_paned) 
         video_paned.add(self.video_panel, weight=7)
         
         # Bottom part: Grid display (30% of height)
@@ -262,15 +261,15 @@ class MainWindow(tk.Tk):
         
         paned.add(control_frame, weight=1)
 
-        # Initialize VLC after frame is created and mapped
-        self.video_frame.bind("<Map>", self._init_vlc)
+        # Initialize video after frame is created and mapped
+        self.video_frame.bind("<Map>", self._init_video_manager)
 
     def _create_status_bar(self):
         status_bar = ttk.Frame(self, relief=tk.SUNKEN)
         status_bar.pack(side=tk.BOTTOM, fill=tk.X)
         self.status_msg = ttk.Label(status_bar, text="Ready")
         self.status_msg.pack(side=tk.LEFT, padx=5)
-        self.stats_lbl = ttk.Label(status_bar, text="Time: --s | FPS: --")
+        self.stats_lbl = ttk.Label(status_bar, text="FPS: -- | Target FPS: -- | Latency: -- | Target Latency: --")
         self.stats_lbl.pack(side=tk.RIGHT, padx=5)
 
     def _init_audio_generator(self):
@@ -291,28 +290,28 @@ class MainWindow(tk.Tk):
             messagebox.showerror("Audio Error", f"Failed to initialize audio system:\n{e}")
 
     def _on_frame_configure(self, event):
-        # Could be used if resizing video window changes VLC viewport
+        # Could be used if resizing video window changes viewport
         pass
 
     def _menu_action(self):
         # Placeholder
         pass
 
-    def _init_vlc(self, event=None):
-        """Initialize VLC manager only once and when frame is ready."""
-        if not self.vlc_manager:
+    def _init_video_manager(self, event=None):
+        """Initialize Video manager only once and when frame is ready."""
+        if not self.video_manager:
             try:
-                # Ensure the frame is fully mapped before initializing VLC
+                # Ensure the frame is fully mapped before initializing video
                 self.video_frame.update_idletasks()
-                self.vlc_manager = VideoManager(self.video_panel, frame_callback=self._process_frame)
-                print("VLC initialized successfully")
+                self.video_manager = VideoManager(self.video_panel, frame_callback=self._process_frame)
+                print("Video manager initialized successfully")
                 
                 # Rebind window handle on resize
                 self.video_frame.bind("<Configure>", self._on_frame_configure)
                 
             except Exception as e:
-                print(f"VLC initialization failed: {e}")
-                self.status_msg.config(text=f"VLC Error: {e}")
+                print(f"Video initialization failed: {e}")
+                self.status_msg.config(text=f"Video Error: {e}")
 
     def _process_frame(self, frame):
         """Process video frame for audio generation."""
@@ -324,43 +323,6 @@ class MainWindow(tk.Tk):
             self.audio_generator.process_frame(frame)
         except Exception as e:
             print(f"Frame processing error: {e}")
-
-    def _start_frame_processing(self):
-        """Start frame processing thread for audio generation."""
-        if self.frame_processing_thread is not None:
-            return
-            
-        self.stop_frame_processing = False
-        self.frame_processing_thread = threading.Thread(target=self._frame_processing_loop, daemon=True)
-        self.frame_processing_thread.start()
-
-    def _stop_frame_processing(self):
-        """Stop frame processing thread."""
-        self.stop_frame_processing = True
-        if self.frame_processing_thread:
-            self.frame_processing_thread.join(timeout=1.0)
-            self.frame_processing_thread = None
-
-    def _frame_processing_loop(self):
-        """Main frame processing loop."""
-        while not self.stop_frame_processing:
-            try:
-                if (self.audio_enabled and self.audio_generator and 
-                    self.vlc_manager and self.vlc_manager.is_playing() and 
-                    self.current_video_path):
-                    
-                    # Get current frame from video file
-                    frame = self.vlc_manager.get_current_frame_from_file(self.current_video_path)
-                    
-                    if frame is not None:
-                        # Process frame for audio
-                        self.audio_generator.process_frame(frame)
-                
-                time.sleep(1/30)  # ~30 FPS processing
-                
-            except Exception as e:
-                print(f"Frame processing loop error: {e}")
-                time.sleep(0.1)
 
     def open_video(self):
         path = filedialog.askopenfilename(
@@ -376,25 +338,20 @@ class MainWindow(tk.Tk):
     def _load_video(self, path):
         """Load video with proper error handling."""
         try:
-            # Stop frame processing
-            self._stop_frame_processing()
-            
-            # Ensure VLC is initialized
-            if not self.vlc_manager:
-                self._init_vlc()
+            # Ensure Video is initialized
+            if not self.video_manager:
+                self._init_video_manager()
                 
-            if not self.vlc_manager:
-                raise RuntimeError("VLC manager not initialized")
+            if not self.video_manager:
+                raise RuntimeError("Video manager not initialized")
 
             # Stop any current video
             self.stop_video()
 
             # Load new video
-            self.vlc_manager.open(path)
-
-            self.vlc_manager.set_video_path(path)
+            self.video_manager.open(path)
             
-            # Give VLC a moment to load the media
+            # Give Video a moment to load the media
             self.after(500, lambda: self._start_video_playback(path))
             
         except Exception as e:
@@ -405,12 +362,8 @@ class MainWindow(tk.Tk):
     def _start_video_playback(self, path):
         """Start video playback after media is loaded."""
         try:
-            self.vlc_manager.play()
+            self.video_manager.play()
             self.status_msg.config(text=f"Playing: {os.path.basename(path)}")
-            
-            # Start frame processing if audio is enabled
-            if self.audio_enabled:
-                self._start_frame_processing()
                 
             self.after(100, self._update_stats)
         except Exception as e:
@@ -424,25 +377,22 @@ class MainWindow(tk.Tk):
             self._load_video(self.current_video_path)
 
     def play_video(self):
-        if self.vlc_manager:
-            self.vlc_manager.play()
-            if self.audio_enabled:
-                self._start_frame_processing()
+        if self.video_manager:
+            self.video_manager.play()
             self.after(100, self._update_stats)
 
     def pause_video(self):
-        if self.vlc_manager:
-            self.vlc_manager.pause()
-            self._stop_frame_processing()
+        if self.video_manager:
+            self.video_manager.pause()
             if self.audio_generator:
                 self.audio_generator.stop_all_notes()
 
     def stop_video(self):
-        if self.vlc_manager:
-            self.vlc_manager.stop()
-            self._stop_frame_processing()
+        if self.video_manager:
+            self.video_manager.stop()
             if self.audio_generator:
                 self.audio_generator.stop_all_notes()
+            self.stats_lbl.config(text="FPS: -- | Target FPS: -- | Latency: -- | Target Latency: --")
 
     def toggle_audio(self):
         """Toggle audio generation on/off."""
@@ -452,11 +402,8 @@ class MainWindow(tk.Tk):
             if not self.audio_generator:
                 self._init_audio_generator()
             self.audio_status_label.config(text="Audio: Enabled")
-            if self.vlc_manager and self.vlc_manager.is_playing():
-                self._start_frame_processing()
         else:
             self.audio_status_label.config(text="Audio: Disabled")
-            self._stop_frame_processing()
             if self.audio_generator:
                 self.audio_generator.stop_all_notes()
 
@@ -514,14 +461,32 @@ class MainWindow(tk.Tk):
             messagebox.showerror("Invalid Settings", str(e))
 
     def _update_stats(self):
-        if self.vlc_manager and self.vlc_manager.is_playing():
-            t = self.vlc_manager.get_time()
-            fps = self.vlc_manager.get_fps()
-            self.stats_lbl.config(text=f"Time: {t:.1f}s | FPS: {fps:.1f}")
-            self.after(100, self._update_stats)
+        if self.video_manager and self.video_manager.is_playing():
+            video_fps = self.video_manager.get_fps()
+            current_fps = self.video_manager.get_current_fps()
+            latency_s = self.video_manager.get_latency()
+            
+            target_latency_s = (1.0 / video_fps) if video_fps > 0 else 0
+            
+            stats_text = (f"FPS: {current_fps:.1f} | "
+                          f"Target FPS: {video_fps:.1f} | "
+                          f"Latency: {latency_s * 1000:.2f}ms | "
+                          f"Target Latency: <{target_latency_s * 1000:.2f}ms")
+
+            self.stats_lbl.config(text=stats_text)
+            
+            # Schedule the next update
+            self.after(500, self._update_stats)
+        else:
+            # If not playing, check again in a bit without resetting the label immediately,
+            # allowing stats to persist during pause.
+            self.after(500, self._update_stats)
 
     def _update_grid_overlay(self):
         """Re-draw grid lines and flashing notes on the grid Canvas."""
+        
+        # Reduce update frequency to 20 FPS instead of 30
+        update_interval = int(1000/20)  # 50ms instead of 33ms
 
         # Clear previous drawings
         self.grid_canvas.delete("all")
@@ -531,73 +496,67 @@ class MainWindow(tk.Tk):
         
         # Make sure we have valid dimensions
         if w <= 1 or h <= 1:
-            self.after(100, self._update_grid_overlay)
+            self.after(update_interval, self._update_grid_overlay)
             return
         
         gw, gh = self.grid_width, self.grid_height
         cell_w, cell_h = w//gw, h//gh
 
-        # Draw grid lines
+        # Draw grid lines (use create_line in batches)
+        grid_lines = []
         for i in range(1, gw):
             x = i * cell_w
-            self.grid_canvas.create_line(x, 0, x, h, fill='white', width=2)
+            grid_lines.extend([x, 0, x, h])
         for j in range(1, gh):
             y = j * cell_h
-            self.grid_canvas.create_line(0, y, w, y, fill='white', width=2)
+            grid_lines.extend([0, y, w, y])
+        
+        # Draw all grid lines at once if possible, or in smaller batches
+        for i in range(1, gw):
+            x = i * cell_w
+            self.grid_canvas.create_line(x, 0, x, h, fill='white', width=1)  # Reduced width
+        for j in range(1, gh):
+            y = j * cell_h
+            self.grid_canvas.create_line(0, y, w, y, fill='white', width=1)  # Reduced width
 
         # Draw outer border
         self.grid_canvas.create_rectangle(0, 0, w, h, outline='white', width=2, fill='')
 
-        # Flash any currently playing notes with velocity-based color
-        if self.audio_generator:
-            for region_index, note in self.audio_generator.note_map.items():
-                if note in self.audio_generator.current_notes:
-                    # Get the velocity for this note
-                    velocity = self.audio_generator.current_notes[note]
-                    
-                    # Convert velocity (0-127) to color intensity (0-255)
-                    intensity = int((velocity / 127.0) * 255)
-                    
-                    # Create pink color based on intensity (pale pink to bright pink)
-                    # Pink is achieved by high red, varying green, and high blue
-                    red = 255  # Always full red for pink
-                    green = max(0, intensity)  # Minimum green for pale pink, increases with intensity
-                    blue = 255  # Always full blue for pink
-                    
-                    color = f"#{red:02x}{green:02x}{blue:02x}"
-                    outline_color = f"#{255:02x}{min(255, green + 30):02x}{255:02x}"  # Slightly brighter outline
-                    
-                    # Compute row/col
-                    row = region_index // gw
-                    col = region_index % gw
-                    x1, y1 = col * cell_w, row * cell_h
-                    x2, y2 = x1 + cell_w, y1 + cell_h
-                    
-                    # Draw a colored rectangle for active notes
-                    self.grid_canvas.create_rectangle(
-                        x1 + 2, y1 + 2, x2 - 2, y2 - 2,
-                        fill=color, outline=outline_color, width=2
-                    )
-            
-            # Draw note labels
-            for region_index, note in self.audio_generator.note_map.items():
+        # Only update active notes if audio generator exists
+        if self.audio_generator and self.audio_generator.current_notes:
+            self._draw_active_notes(gw, gh, cell_w, cell_h)
+
+        # Schedule next update with reduced frequency
+        self.after(update_interval, self._update_grid_overlay)
+
+    def _draw_active_notes(self, gw, gh, cell_w, cell_h):
+        """Draw active notes separately to optimize performance."""
+        for region_index, note in self.audio_generator.note_map.items():
+            if note in self.audio_generator.current_notes:
+                # Get the velocity for this note
+                velocity = self.audio_generator.current_notes[note]
+                
+                # Simplified color calculation
+                intensity = velocity * 2  # Scale 0-127 to 0-254
+                color = f"#{255:02x}{intensity:02x}{255:02x}"
+                
+                # Compute row/col
                 row = region_index // gw
                 col = region_index % gw
+                x1, y1 = col * cell_w, row * cell_h
+                x2, y2 = x1 + cell_w, y1 + cell_h
+                
+                # Draw colored rectangle
+                self.grid_canvas.create_rectangle(
+                    x1 + 1, y1 + 1, x2 - 1, y2 - 1,
+                    fill=color, outline='', width=0  # No outline for performance
+                )
+                
+                # Draw note label
                 x = col * cell_w + cell_w // 2
                 y = row * cell_h + cell_h // 2
-                
-                # Determine text color based on note state
-                if note in self.audio_generator.current_notes:
-                    text_color = 'white'  # White text on pink background
-                else:
-                    text_color = '#888888'  # Dark grey text for inactive notes
-                
-                # Note number only (removed the "ON" status)
                 self.grid_canvas.create_text(x, y, text=f"N{note}", 
-                                        fill=text_color, font=('Arial', 10, 'bold'))
-
-        # Schedule next update
-        self.after(int(1000/30), self._update_grid_overlay)
+                                        fill='white', font=('Arial', 8))  # Smaller font
 
     def on_scale_change(self, event=None):
         """Handle scale selection change."""
@@ -624,16 +583,14 @@ class MainWindow(tk.Tk):
 
     def cleanup(self):
         """Clean up resources."""
-        try:
-            self._stop_frame_processing()
-            
+        try:            
             if self.audio_generator:
                 self.audio_generator.cleanup()
                 self.audio_generator = None
                 
-            if self.vlc_manager:
-                self.vlc_manager.cleanup()
-                self.vlc_manager = None
+            if self.video_manager:
+                self.video_manager.cleanup()
+                self.video_manager = None
                 
         except Exception as e:
             print(f"Cleanup error: {e}")

@@ -1,308 +1,279 @@
+import av
 import tkinter as tk
-import vlc
+from PIL import Image, ImageTk
 import threading
+import queue
 import time
-import atexit
-import os
+import numpy as np
 import cv2
+
+# Constants for queue sizes to manage memory usage
+DISPLAY_QUEUE_SIZE = 20
+PROCESSING_QUEUE_SIZE = 200
 
 class VideoManager:
     """
-    Wraps a python-vlc MediaPlayer to handle video playback under VLC's timing,
-    hardware decode, and scaling. Exposes simple controls and timing stats.
+    Manages video playback using PyAV (FFmpeg bindings) in a unified pipeline.
+    It handles decoding, display, and frame processing in separate threads for
+    better performance and synchronization.
     """
     def __init__(self, video_panel, frame_callback=None):
         """
-        video_panel: a Tkinter widget (Frame/Label/Canvas) to embed VLC video into.
-        frame_callback: optional callback function to receive video frames for processing
+        Initializes the VideoManager.
+
+        Args:
+            video_panel (tk.Widget): The Tkinter Label or widget to display video frames.
+            frame_callback (function, optional): A callback function to process video frames.
         """
-        # Keep a ref to the widget so we can extract its window handle:
         self.video_panel = video_panel
         self.frame_callback = frame_callback
-        self.instance = None
-        self.player = None
-        self.media = None
-        self._is_initialized = False
-        self._frame_capture_thread = None
-        self._stop_capture = False
-        
-        # Register cleanup on exit
-        atexit.register(self.cleanup)
-        
-        self._initialize_vlc()
 
-    def _initialize_vlc(self):
-        """Initialize VLC with proper error handling and resource management."""
+        # PyAV and video state
+        self.container = None
+        self.video_stream = None
+        self.fps = 0 # original video fps
+        self.current_time = 0.0
+
+        # Threading and queueing infrastructure
+        self.display_queue = queue.Queue(maxsize=DISPLAY_QUEUE_SIZE)
+        self.processing_queue = queue.Queue(maxsize=PROCESSING_QUEUE_SIZE)
+
+        self.decoder_thread = None
+        self.display_thread = None
+        self.processing_thread = None
+
+        self.stop_event = threading.Event()
+        self.pause_event = threading.Event()
+
+        self._is_playing = False
+
+        self.current_fps = 0 #fps of our video display, depends on performance
+        self.processing_latency = 0.0
+        self._frame_count = 0
+        self._frame_count_start_time = time.time()
+
+    def open(self, path):
+        """Opens a video file, sets up streams, and starts the decoder thread."""
+        self.cleanup()  # Ensure previous resources are released
+
         try:
-            # More robust VLC options
-            vlc_options = [
-                '--no-xlib',
-                '--quiet',                     # Reduce VLC logging
-                '--no-video-title-show',       # Don't show filename overlay
-                '--no-snapshot-preview',       # Disable snapshot preview
-                '--no-osd',                    # Disable on-screen display
-                '--no-stats',                  # Disable statistics
-                '--no-sub-autodetect-file',    # Don't auto-detect subtitles
-                '--no-disable-screensaver',    # Don't disable screensaver
-                '--avcodec-hw=none',           # Start with software decoding
-                '--vout=directx' if os.name == 'nt' else '--vout=x11',  # Platform-specific video output
-            ]
+            self.container = av.open(path)
+            self.video_stream = self.container.streams.video[0]
+            self.fps = self.video_stream.average_rate
             
-            self.instance = vlc.Instance(vlc_options)
-            if not self.instance:
-                raise RuntimeError("Failed to create VLC instance")
-                
-            self.player = self.instance.media_player_new()
-            if not self.player:
-                raise RuntimeError("Failed to create VLC media player")
-                
-            self._set_window_handle()
-            self._is_initialized = True
-            
-        except Exception as e:
-            print(f"VLC initialization error: {e}")
+            # Attempt to enable hardware acceleration
+            try:
+                self.video_stream.codec_context.thread_count = 0  # Auto-detect threads
+            except Exception as e:
+                print(f"Could not set thread count: {e}")
+
+            self.stop_event.clear()
+            self.pause_event.clear()
+
+            # Start the decoding process
+            self.decoder_thread = threading.Thread(target=self._decoder_loop, daemon=True)
+            self.decoder_thread.start()
+
+        except av.AVError as e:
+            print(f"Error opening video file with PyAV: {e}")
             self.cleanup()
             raise
 
-    def _set_window_handle(self):
-        """Hook VLC video output into our Tkinter widget with better error handling."""
-        if not self.video_panel or not hasattr(self.video_panel, 'winfo_id'):
-            return
-            
-        try:
-            # Wait for widget to be mapped
-            self.video_panel.update_idletasks()
-            hwnd = self.video_panel.winfo_id()
-            
-            # Platform-specific window handle setting
-            if tk.sys.platform.startswith('win'):
-                self.player.set_hwnd(hwnd)
-            elif tk.sys.platform.startswith('linux'):
-                self.player.set_xwindow(hwnd)
-            elif tk.sys.platform == 'darwin':
-                self.player.set_nsobject(hwnd)
-                
-        except Exception as e:
-            print(f"Window handle error: {e}")
-
-    def set_video_path(self, path):
-        """Store video path for frame extraction."""
-        self._current_video_path = path
-
-    def open(self, path):
-        """Load a file (or stream) into VLC with proper cleanup."""
-        if not self._is_initialized:
-            self._initialize_vlc()
-            
-        try:
-            # Stop and cleanup previous media
-            if self.player:
-                self.player.stop()
-                
-            # Release previous media
-            if self.media:
-                self.media.release()
-                
-            # Create new media
-            self.media = self.instance.media_new(path)
-            if not self.media:
-                raise RuntimeError(f"Failed to create media from: {path}")
-                
-            self.player.set_media(self.media)
-            
-            # Better priming approach - wait for media to be parsed
-            self._prime_player()
-            
-        except Exception as e:
-            print(f"Media loading error: {e}")
-            raise
-
-    def _prime_player(self):
-        """Prime the player with better synchronization."""
-        def _prime():
-            try:
-                # Start playback
-                self.player.play()
-                
-                # Wait for player to actually start
-                max_wait = 50  # 5 seconds max
-                wait_count = 0
-                while not self.player.is_playing() and wait_count < max_wait:
-                    time.sleep(0.1)
-                    wait_count += 1
-                
-                if self.player.is_playing():
-                    # Let it play for a moment to establish video context
-                    time.sleep(0.2)
-                    # Then pause
-                    self.player.pause()
-                else:
-                    print("Warning: Player failed to start")
-                    
-            except Exception as e:
-                print(f"Player priming error: {e}")
-        
-        threading.Thread(target=_prime, daemon=True).start()
-
     def play(self):
-        if self.player and self._is_initialized:
-            self.player.play()
-            self._start_frame_capture()
+        """Starts or resumes playback."""
+        if not self.container:
+            return
+
+        if self.pause_event.is_set(): # Resuming from pause
+            self.pause_event.clear()
+        
+        if not self._is_playing:
+            self._is_playing = True
+            # Start consumer threads only once
+            if not self.display_thread or not self.display_thread.is_alive():
+                self.display_thread = threading.Thread(target=self._display_loop, daemon=True)
+                self.display_thread.start()
+            
+            if self.frame_callback and (not self.processing_thread or not self.processing_thread.is_alive()):
+                self.processing_thread = threading.Thread(target=self._processing_loop, daemon=True)
+                self.processing_thread.start()
 
     def pause(self):
-        if self.player and self._is_initialized:
-            self.player.pause()
-            self._stop_frame_capture()
+        """Pauses video playback."""
+        self.pause_event.set()
 
     def stop(self):
-        if self.player and self._is_initialized:
-            self.player.stop()
-            self._stop_frame_capture()
-
-    def get_time(self):
-        """Return current playback time in seconds."""
-        if not self.player or not self._is_initialized:
-            return 0.0
-        try:
-            return self.player.get_time() / 1000.0
-        except:
-            return 0.0
-
-    def get_fps(self):
-        """Return the video's native FPS, if known (else 0.0)."""
-        if not self.player or not self._is_initialized:
-            return 0.0
-        try:
-            return self.player.get_fps() or 0.0
-        except:
-            return 0.0
-
-    def is_playing(self):
-        if not self.player or not self._is_initialized:
-            return False
-        try:
-            return bool(self.player.is_playing())
-        except:
-            return False
-
-    def set_position(self, pos):
-        """Seek to a fraction [0.0–1.0] of the video."""
-        if self.player and self._is_initialized:
-            try:
-                self.player.set_position(pos)
-            except:
-                pass
-
-    def set_frame_callback(self, callback):
-        """Set callback function to receive video frames."""
-        self.frame_callback = callback
-
-    def _start_frame_capture(self):
-        """Start frame capture thread for audio processing."""
-        if self.frame_callback and not self._frame_capture_thread:
-            self._stop_capture = False
-            self._frame_capture_thread = threading.Thread(target=self._capture_frames, daemon=True)
-            self._frame_capture_thread.start()
-
-    def _stop_frame_capture(self):
-        """Stop frame capture thread."""
-        self._stop_capture = True
-        if self._frame_capture_thread:
-            self._frame_capture_thread.join(timeout=1.0)
-            self._frame_capture_thread = None
-
-    def _capture_frames(self):
-        """Capture frames from VLC for audio processing."""
-        if not self.frame_callback:
-            return
-            
-        # Create a VideoCapture object for the same video file
-        # This is a workaround since VLC doesn't easily provide frame access
-        # Note: This assumes we have access to the video file path
-        # In a full implementation, you might want to use VLC's snapshot feature
-        # or implement a more sophisticated frame capture mechanism
-        
-        frame_rate = max(self.get_fps(), 30.0)  # Default to 30 fps if unknown
-        frame_interval = 1.0 / frame_rate
-        
-        while not self._stop_capture and self.is_playing():
-            try:
-                # For now, we'll use a placeholder frame
-                # In a real implementation, you'd capture the actual frame from VLC
-                # This could be done using VLC's snapshot feature or by reading
-                # the video file directly with OpenCV
-                
-                # Placeholder: Create a black frame
-                # You would replace this with actual frame capture
-                if hasattr(self, '_current_video_path') and self._current_video_path:
-                    frame = self.get_current_frame_from_file(self._current_video_path)
-                    if frame is not None and self.frame_callback:
-                        self.frame_callback(frame)
-                
-                time.sleep(frame_interval)
-                
-            except Exception as e:
-                print(f"Frame capture error: {e}")
-                break
-
-    def get_current_frame_from_file(self, video_path):
-        """
-        Get current frame by reading from video file at current position.
-        This is a workaround for VLC frame access limitations.
-        """
-        if not video_path or not os.path.exists(video_path):
-            return None
-            
-        try:
-            cap = cv2.VideoCapture(video_path)
-            if not cap.isOpened():
-                return None
-                
-            # Get current position as fraction
-            current_pos = self.player.get_position()
-            if current_pos < 0:
-                current_pos = 0
-                
-            # Get total frames and seek to current position
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            target_frame = int(current_pos * total_frames)
-            
-            cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
-            ret, frame = cap.read()
-            
-            cap.release()
-            return frame if ret else None
-            
-        except Exception as e:
-            print(f"Frame extraction error: {e}")
-            return None
-
-    def cleanup(self):
-        """Thorough cleanup of VLC resources."""
-        self._is_initialized = False
-        self._stop_frame_capture()
-        
-        try:
-            if self.player:
-                self.player.stop()
-                self.player.release()
-                self.player = None
-                
-            if self.media:
-                self.media.release()
-                self.media = None
-                
-            if self.instance:
-                self.instance.release()
-                self.instance = None
-                
-        except Exception as e:
-            print(f"Cleanup error: {e}")
-
-    def release(self):
-        """Public method to release resources."""
+        """Stops video playback and cleans up resources."""
         self.cleanup()
 
+    def _decoder_loop(self):
+        """Decodes frames and pushes them as NumPy arrays to consumer queues."""
+        frame_delay = 1.0 / self.fps if self.fps > 0 else 1/30.0
+        next_frame_time = time.time()
+
+        for frame in self.container.decode(video=0):
+            if self.stop_event.is_set():
+                break
+            
+            while self.pause_event.is_set():
+                if self.stop_event.is_set():
+                    break
+                time.sleep(0.01)
+
+            try:
+                # Decode directly to a NumPy array
+                frame_np = frame.to_ndarray(format='rgb24')
+                self.current_time = frame.pts * self.video_stream.time_base
+
+                # Push NumPy array to queues (non-blocking)
+                try:
+                    self.display_queue.put_nowait(frame_np)
+                except queue.Full:
+                    # Drop frames if display can't keep up
+                    pass
+                    
+                if self.frame_callback:
+                    try:
+                        self.processing_queue.put_nowait(frame_np)
+                    except queue.Full:
+                        # Drop frames if processing can't keep up
+                        pass
+
+                # More precise timing
+                next_frame_time += frame_delay
+                sleep_time = next_frame_time - time.time()
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                else:
+                    # We're behind, reset timing
+                    next_frame_time = time.time()
+                    
+            except Exception as e:
+                print(f"Decoder loop error: {e}")
+                break
+        
+        self._is_playing = False
+
+    def _display_loop(self):
+        """Displays frames from NumPy arrays in the display queue."""
+        last_panel_size = (0, 0)
+        
+        while not self.stop_event.is_set():
+            try:
+                frame_np = self.display_queue.get(timeout=0.5)
+
+                # Cache panel dimensions to avoid repeated winfo calls
+                panel_w, panel_h = self.video_panel.winfo_width(), self.video_panel.winfo_height()
+                
+                if panel_w > 1 and panel_h > 1:
+                    # Only resize if dimensions changed or first time
+                    if (panel_w, panel_h) != last_panel_size:
+                        last_panel_size = (panel_w, panel_h)
+                    
+                    # Use faster interpolation
+                    resized_frame = cv2.resize(frame_np, (panel_w, panel_h), interpolation=cv2.INTER_NEAREST)
+                else:
+                    resized_frame = frame_np
+
+                # Create image more efficiently
+                img = Image.fromarray(resized_frame, 'RGB')
+                photo = ImageTk.PhotoImage(img)
+                
+                # Update UI in main thread
+                self.video_panel.after_idle(lambda p=photo: self._update_display(p))
+
+            except queue.Empty:
+                if not self._is_playing and not self.pause_event.is_set():
+                    break
+            except Exception as e:
+                print(f"Display loop error: {e}")
+                break
+
+    def _update_display(self, photo):
+        """Update display in main thread."""
+        self.video_panel.config(image=photo)
+        self.video_panel.image = photo
+    
+    def _processing_loop(self):
+        """Processes NumPy frames from the processing queue."""
+        while not self.stop_event.is_set():
+            try:
+                # The queue now contains the frame and no timestamp
+                frame_rgb = self.processing_queue.get(timeout=0.5)
+                
+                # Update FPS counter
+                self._frame_count += 1
+                elapsed_time = time.time() - self._frame_count_start_time
+                if elapsed_time >= 1.0:
+                    self.current_fps = self._frame_count / elapsed_time
+                    self._frame_count = 0
+                    self._frame_count_start_time = time.time()
+                
+                # Convert directly to grayscale
+                frame_gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
+
+                if self.frame_callback:
+                    self.frame_callback(frame_gray)
+
+            except queue.Empty:
+                if not self._is_playing and not self.pause_event.is_set():
+                    self.current_fps = 0
+                    break
+            except Exception as e:
+                print(f"Processing loop error: {e}")
+                break
+
+    def get_time(self):
+        """Returns the current playback time in seconds."""
+        return float(self.current_time)
+
+    def get_fps(self):
+        """Returns the video's frames per second."""
+        return float(self.fps) if self.fps else 0.0
+
+    def is_playing(self):
+        """Returns True if the video is currently playing."""
+        return self._is_playing and not self.pause_event.is_set()
+
+    def set_position(self, pos):
+        """Seeks to a position in the video (fraction 0.0 to 1.0)."""
+        if self.container:
+            try:
+                target_ts = pos * self.container.duration
+                self.container.seek(int(target_ts))
+                self.current_time = target_ts / av.time_base # Update time immediately
+            except Exception as e:
+                print(f"Seek error: {e}")
+
+    def get_latency(self):
+        """Returns the last measured frame processing latency in seconds."""
+        return self.processing_latency
+
+    def get_current_fps(self):
+        """Returns the current processing framerate."""
+        return self.current_fps
+
+    def cleanup(self):
+        """Stops all threads and releases video resources."""
+        self._is_playing = False
+        self.stop_event.set()
+        
+        # Wait for threads to finish
+        if self.decoder_thread and self.decoder_thread.is_alive():
+            self.decoder_thread.join(timeout=1.0)
+        if self.display_thread and self.display_thread.is_alive():
+            self.display_thread.join(timeout=1.0)
+        if self.processing_thread and self.processing_thread.is_alive():
+            self.processing_thread.join(timeout=1.0)
+
+        # Clear queues
+        with self.display_queue.mutex: self.display_queue.queue.clear()
+        with self.processing_queue.mutex: self.processing_queue.queue.clear()
+
+        if self.container:
+            self.container.close()
+            self.container = None
+    
     def __del__(self):
         """Destructor to ensure cleanup."""
         self.cleanup()
