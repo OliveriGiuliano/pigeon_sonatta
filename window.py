@@ -502,28 +502,19 @@ class MainWindow(tk.Tk):
         gw, gh = self.grid_width, self.grid_height
         cell_w, cell_h = w//gw, h//gh
 
-        # Draw grid lines (use create_line in batches)
-        grid_lines = []
+        # Draw grid lines
         for i in range(1, gw):
             x = i * cell_w
-            grid_lines.extend([x, 0, x, h])
+            self.grid_canvas.create_line(x, 0, x, h, fill='white', width=1)
         for j in range(1, gh):
             y = j * cell_h
-            grid_lines.extend([0, y, w, y])
-        
-        # Draw all grid lines at once if possible, or in smaller batches
-        for i in range(1, gw):
-            x = i * cell_w
-            self.grid_canvas.create_line(x, 0, x, h, fill='white', width=1)  # Reduced width
-        for j in range(1, gh):
-            y = j * cell_h
-            self.grid_canvas.create_line(0, y, w, y, fill='white', width=1)  # Reduced width
+            self.grid_canvas.create_line(0, y, w, y, fill='white', width=1)
 
         # Draw outer border
         self.grid_canvas.create_rectangle(0, 0, w, h, outline='white', width=2, fill='')
 
-        # Only update active notes if audio generator exists
-        if self.audio_generator and self.audio_generator.current_notes:
+        # Only update active notes if audio generator exists - now thread-safe
+        if self.audio_generator:
             self._draw_active_notes(gw, gh, cell_w, cell_h)
 
         # Schedule next update with reduced frequency
@@ -531,13 +522,24 @@ class MainWindow(tk.Tk):
 
     def _draw_active_notes(self, gw, gh, cell_w, cell_h):
         """Draw active notes separately to optimize performance."""
-        for region_index, note in self.audio_generator.note_map.items():
-            if note in self.audio_generator.current_notes:
+        # Get thread-safe snapshot of current notes
+        if not self.audio_generator:
+            return
+            
+        current_notes_snapshot = self.audio_generator.get_current_notes_snapshot()
+        note_map_copy = {}
+        
+        # Get thread-safe copy of note map
+        with self.audio_generator.state_lock:
+            note_map_copy = self.audio_generator.note_map.copy()
+        
+        for region_index, note in note_map_copy.items():
+            if note in current_notes_snapshot:
                 # Get the velocity for this note
-                velocity = self.audio_generator.current_notes[note]
+                velocity = current_notes_snapshot[note]
                 
                 # Simplified color calculation
-                intensity = velocity * 2  # Scale 0-127 to 0-254
+                intensity = min(255, velocity * 2)  # Scale 0-127 to 0-254, cap at 255
                 color = f"#{255:02x}{intensity:02x}{255:02x}"
                 
                 # Compute row/col

@@ -38,6 +38,8 @@ class AudioGenerator:
         self.midi_out = None
         self.current_notes = {}  # Track currently playing notes
         self.note_lock = threading.Lock()
+        self.state_lock = threading.Lock()  # For general state changes
+        self._current_notes_snapshot = {}  # Thread-safe snapshot for UI
         
         # Processing state
         self.is_processing = False
@@ -71,9 +73,10 @@ class AudioGenerator:
     
     def set_scale(self, scale_name, root_note):
         """Change scale and root note, recalculate note mapping."""
-        self.scale_name = scale_name
-        self.root_note = root_note
-        self.note_map = self._create_note_map()
+        with self.state_lock:
+            self.scale_name = scale_name
+            self.root_note = root_note
+            self.note_map = self._create_note_map()
         self.stop_all_notes()  # Stop current notes as mapping changed
 
     def get_available_scales(self):
@@ -187,17 +190,25 @@ class AudioGenerator:
                 elif should_play and is_playing:
                     # Update velocity if significantly different
                     current_velocity = self.current_notes[note]
-                    if abs(velocity - current_velocity) > self.change_velocity_threshold:  # Threshold for velocity change
+                    if abs(velocity - current_velocity) > self.change_velocity_threshold:
                         midi_events.append(('note_off', note, current_velocity))
                         midi_events.append(('note_on', note, velocity))
                         self.current_notes[note] = velocity
                         
-                elif should_stop and is_playing:
+                elif not should_stop and is_playing:  # Fixed logic
                     # Stop note
                     midi_events.append(('note_off', note, self.current_notes[note]))
                     del self.current_notes[note]
+            
+            # Update thread-safe snapshot for UI
+            self._current_notes_snapshot = self.current_notes.copy()
         
         return midi_events
+
+    def get_current_notes_snapshot(self):
+        """Get a thread-safe snapshot of current notes for UI display."""
+        with self.note_lock:
+            return self._current_notes_snapshot.copy()
     
     def play_midi_events(self, midi_events):
         """Play MIDI events through the output device."""
@@ -253,16 +264,18 @@ class AudioGenerator:
     
     def set_grid_size(self, width, height):
         """Change grid size and recalculate note mapping."""
-        self.grid_width = width
-        self.grid_height = height
-        self.total_regions = width * height
-        self.note_map = self._create_note_map()
+        with self.state_lock:
+            self.grid_width = width
+            self.grid_height = height
+            self.total_regions = width * height
+            self.note_map = self._create_note_map()
         self.stop_all_notes()  # Stop current notes as mapping changed
-    
+
     def set_note_range(self, min_note, max_note):
         """Change note range and recalculate note mapping."""
-        self.note_range = (min_note, max_note)
-        self.note_map = self._create_note_map()
+        with self.state_lock:
+            self.note_range = (min_note, max_note)
+            self.note_map = self._create_note_map()
         self.stop_all_notes()  # Stop current notes as mapping changed
     
     def get_grid_visualization(self, frame):

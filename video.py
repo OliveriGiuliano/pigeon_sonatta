@@ -45,6 +45,10 @@ class VideoManager:
         self.stop_event = threading.Event()
         self.pause_event = threading.Event()
 
+         # state lock for thread safety
+        self._state_lock = threading.Lock()
+        self._is_playing = False
+
         self._is_playing = False
 
         self.current_fps = 0 #fps of our video display, depends on performance
@@ -84,23 +88,30 @@ class VideoManager:
         if not self.container:
             return
 
-        if self.pause_event.is_set(): # Resuming from pause
-            self.pause_event.clear()
-        
-        if not self._is_playing:
-            self._is_playing = True
-            # Start consumer threads only once
-            if not self.display_thread or not self.display_thread.is_alive():
-                self.display_thread = threading.Thread(target=self._display_loop, daemon=True)
-                self.display_thread.start()
+        with self._state_lock:
+            if self.pause_event.is_set(): # Resuming from pause
+                self.pause_event.clear()
             
-            if self.frame_callback and (not self.processing_thread or not self.processing_thread.is_alive()):
-                self.processing_thread = threading.Thread(target=self._processing_loop, daemon=True)
-                self.processing_thread.start()
+            if not self._is_playing:
+                self._is_playing = True
+                # Start consumer threads only once
+                if not self.display_thread or not self.display_thread.is_alive():
+                    self.display_thread = threading.Thread(target=self._display_loop, daemon=True)
+                    self.display_thread.start()
+                
+                if self.frame_callback and (not self.processing_thread or not self.processing_thread.is_alive()):
+                    self.processing_thread = threading.Thread(target=self._processing_loop, daemon=True)
+                    self.processing_thread.start()
 
     def pause(self):
         """Pauses video playback."""
-        self.pause_event.set()
+        with self._state_lock:
+            self.pause_event.set()
+
+    def is_playing(self):
+        """Returns True if the video is currently playing."""
+        with self._state_lock:
+            return self._is_playing and not self.pause_event.is_set()
 
     def stop(self):
         """Stops video playback and cleans up resources."""
@@ -152,7 +163,9 @@ class VideoManager:
                 print(f"Decoder loop error: {e}")
                 break
         
-        self._is_playing = False
+        # Safely update playing state
+        with self._state_lock:
+            self._is_playing = False
 
     def _display_loop(self):
         """Displays frames from NumPy arrays in the display queue."""
@@ -230,10 +243,6 @@ class VideoManager:
     def get_fps(self):
         """Returns the video's frames per second."""
         return float(self.fps) if self.fps else 0.0
-
-    def is_playing(self):
-        """Returns True if the video is currently playing."""
-        return self._is_playing and not self.pause_event.is_set()
 
     def set_position(self, pos):
         """Seeks to a position in the video (fraction 0.0 to 1.0)."""
