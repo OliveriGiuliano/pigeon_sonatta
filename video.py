@@ -41,6 +41,7 @@ class VideoManager:
         self.decoder_thread = None
         self.display_thread = None
         self.processing_thread = None
+        self.ui_update_queue = queue.Queue(maxsize=50)  # Add this line
 
         self.stop_event = threading.Event()
         self.pause_event = threading.Event()
@@ -196,8 +197,11 @@ class VideoManager:
                 img = Image.fromarray(resized_frame, 'RGB')
                 photo = ImageTk.PhotoImage(img)
                 
-                # Update UI in main thread
-                self.video_panel.after_idle(lambda p=photo: self._update_display(p))
+                # Queue UI update instead of direct access
+                try:
+                    self.ui_update_queue.put_nowait(photo)
+                except queue.Full:
+                    pass  # Drop frame if UI update queue is full
 
             except queue.Empty:
                 if not self._is_playing and not self.pause_event.is_set():
@@ -205,6 +209,17 @@ class VideoManager:
             except Exception as e:
                 print(f"Display loop error: {e}")
                 break
+    
+    def process_ui_updates(self):
+        """Process pending UI updates from worker threads. Call this from main thread."""
+        try:
+            while True:
+                photo = self.ui_update_queue.get_nowait()
+                self._update_display(photo)
+        except queue.Empty:
+            pass
+        except Exception as e:
+            print(f"UI update processing error: {e}")
 
     def _update_display(self, photo):
         """Update display in main thread."""
@@ -303,6 +318,7 @@ class VideoManager:
         # Safely clear queues
         self._clear_queue_safely(self.display_queue)
         self._clear_queue_safely(self.processing_queue)
+        self._clear_queue_safely(self.ui_update_queue) 
 
         # Close container with error handling
         if self.container:

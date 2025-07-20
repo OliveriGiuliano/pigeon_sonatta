@@ -366,9 +366,21 @@ class MainWindow(tk.Tk):
             self.status_msg.config(text=f"Playing: {os.path.basename(path)}")
                 
             self.after(100, self._update_stats)
+            self.after(50, self._process_ui_updates)  # Add this line
         except Exception as e:
             print(f"Playback error: {e}")
             self.status_msg.config(text=f"Playback error: {e}")
+
+    def _process_ui_updates(self):
+        """Process UI updates from video manager in main thread."""
+        if self.video_manager:
+            self.video_manager.process_ui_updates()
+        
+        # Schedule next update
+        if self.video_manager and self.video_manager.is_playing():
+            self.after(33, self._process_ui_updates)  # ~30 FPS UI updates
+        else:
+            self.after(100, self._process_ui_updates)  # Slower polling when not playing
 
     def reload_video(self):
         """Reload the current video - useful for debugging."""
