@@ -314,7 +314,7 @@ class MainWindow(tk.Tk):
                 self.status_msg.config(text=f"Video Error: {e}")
 
     def _process_frame(self, frame):
-        """Process video frame for audio generation."""
+        """Process video frame for audio generation with error handling."""
         if not self.audio_enabled or not self.audio_generator or frame is None:
             return
             
@@ -583,19 +583,52 @@ class MainWindow(tk.Tk):
         root_name = self.root_note_var.get() if hasattr(self, 'root_note_var') else 'C'
         self.scale_info_label.config(text=f"Scale: {self.current_scale} ({root_name})")
 
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit with guaranteed cleanup."""
+        self.cleanup()
+        return False
+
     def cleanup(self):
-        """Clean up resources."""
-        try:            
+        """Clean up resources with proper error handling."""
+        cleanup_errors = []
+        
+        try:
+            # Stop frame processing thread
+            self.stop_frame_processing = True
+            if self.frame_processing_thread and self.frame_processing_thread.is_alive():
+                self.frame_processing_thread.join(timeout=1.0)
+                if self.frame_processing_thread.is_alive():
+                    cleanup_errors.append("Frame processing thread did not terminate")
+            
+            # Clean up audio generator
             if self.audio_generator:
-                self.audio_generator.cleanup()
-                self.audio_generator = None
-                
+                try:
+                    self.audio_generator.cleanup()
+                except Exception as e:
+                    cleanup_errors.append(f"Audio cleanup error: {e}")
+                finally:
+                    self.audio_generator = None
+                    
+            # Clean up video manager
             if self.video_manager:
-                self.video_manager.cleanup()
-                self.video_manager = None
+                try:
+                    self.video_manager.cleanup()
+                except Exception as e:
+                    cleanup_errors.append(f"Video cleanup error: {e}")
+                finally:
+                    self.video_manager = None
+                    
+            if cleanup_errors:
+                print(f"Cleanup completed with errors: {'; '.join(cleanup_errors)}")
+            else:
+                print("Cleanup completed successfully")
                 
         except Exception as e:
-            print(f"Cleanup error: {e}")
+            print(f"Critical cleanup error: {e}")
 
     def on_closing(self):
         print("Closing application...")

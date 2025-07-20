@@ -140,15 +140,10 @@ class AudioGenerator:
         brightness_values = {}
         total_regions = self.grid_width * self.grid_height
 
-        # Read the brightness values directly from the resized image.
-        # The values are already the "average" for their respective regions.
-        for i in range(total_regions):
-            row = i // self.grid_width
-            col = i % self.grid_width
-            
-            # Normalize brightness from 0-255 to 0.0-1.0
-            brightness = resized[row, col] / 255.0
-            brightness_values[i] = brightness
+        # Read the brightness values directly from the resized image using numpy operations
+        brightness_array = resized.flatten() / 255.0
+        for i in range(min(total_regions, len(brightness_array))):
+            brightness_values[i] = brightness_array[i]
 
         return brightness_values
     
@@ -333,18 +328,39 @@ class AudioGenerator:
         try:
             self.stop_all_notes()
             
+            # Close MIDI output with error handling
             if self.midi_out:
-                self.midi_out.close()
-                self.midi_out = None
+                try:
+                    # Send all notes off message
+                    for channel in range(16):
+                        self.midi_out.write_short(0xB0 | channel, 123, 0)  # All notes off
+                        self.midi_out.write_short(0xB0 | channel, 120, 0)  # All sound off
+                    self.midi_out.close()
+                except Exception as e:
+                    print(f"Error closing MIDI output: {e}")
+                finally:
+                    self.midi_out = None
             
+            # Clean up pygame resources
             if pygame.mixer.get_init():
-                pygame.mixer.quit()
-                
+                try:
+                    pygame.mixer.quit()
+                except Exception as e:
+                    print(f"Error quitting pygame mixer: {e}")
+                    
             if pygame.midi.get_init():
-                pygame.midi.quit()
+                try:
+                    pygame.midi.quit()
+                except Exception as e:
+                    print(f"Error quitting pygame midi: {e}")
+                    
+            # Clear state
+            with self.note_lock:
+                self.current_notes.clear()
+                self._current_notes_snapshot.clear()
                 
             self.is_initialized = False
-            print("Audio system cleaned up")
+            print("Audio system cleaned up successfully")
             
         except Exception as e:
             print(f"Audio cleanup error: {e}")

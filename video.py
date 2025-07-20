@@ -174,6 +174,10 @@ class VideoManager:
         while not self.stop_event.is_set():
             try:
                 frame_np = self.display_queue.get(timeout=0.5)
+                
+                # Check for sentinel value (cleanup signal)
+                if frame_np is None:
+                    break
 
                 # Cache panel dimensions to avoid repeated winfo calls
                 panel_w, panel_h = self.video_panel.winfo_width(), self.video_panel.winfo_height()
@@ -211,8 +215,11 @@ class VideoManager:
         """Processes NumPy frames from the processing queue."""
         while not self.stop_event.is_set():
             try:
-                # The queue now contains the frame and no timestamp
                 frame_rgb = self.processing_queue.get(timeout=0.5)
+                
+                # Check for sentinel value (cleanup signal)
+                if frame_rgb is None:
+                    break
                 
                 # Update FPS counter
                 self._frame_count += 1
@@ -226,7 +233,10 @@ class VideoManager:
                 frame_gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
 
                 if self.frame_callback:
-                    self.frame_callback(frame_gray)
+                    try:
+                        self.frame_callback(frame_gray)
+                    except Exception as e:
+                        print(f"Frame callback error: {e}")
 
             except queue.Empty:
                 if not self._is_playing and not self.pause_event.is_set():
@@ -267,21 +277,53 @@ class VideoManager:
         self._is_playing = False
         self.stop_event.set()
         
-        # Wait for threads to finish
-        if self.decoder_thread and self.decoder_thread.is_alive():
-            self.decoder_thread.join(timeout=1.0)
-        if self.display_thread and self.display_thread.is_alive():
-            self.display_thread.join(timeout=1.0)
-        if self.processing_thread and self.processing_thread.is_alive():
-            self.processing_thread.join(timeout=1.0)
+        # Force threads to wake up from blocking operations
+        try:
+            self.display_queue.put_nowait(None)  # Sentinel to wake display thread
+        except queue.Full:
+            pass
+        try:
+            self.processing_queue.put_nowait(None)  # Sentinel to wake processing thread
+        except queue.Full:
+            pass
+        
+        # Wait for threads to finish with verification
+        threads_to_join = [
+            ('decoder', self.decoder_thread),
+            ('display', self.display_thread), 
+            ('processing', self.processing_thread)
+        ]
+        
+        for thread_name, thread in threads_to_join:
+            if thread and thread.is_alive():
+                thread.join(timeout=2.0)
+                if thread.is_alive():
+                    print(f"Warning: {thread_name} thread did not terminate cleanly")
+        
+        # Safely clear queues
+        self._clear_queue_safely(self.display_queue)
+        self._clear_queue_safely(self.processing_queue)
 
-        # Clear queues
-        with self.display_queue.mutex: self.display_queue.queue.clear()
-        with self.processing_queue.mutex: self.processing_queue.queue.clear()
-
+        # Close container with error handling
         if self.container:
-            self.container.close()
-            self.container = None
+            try:
+                self.container.close()
+            except Exception as e:
+                print(f"Error closing video container: {e}")
+            finally:
+                self.container = None
+                self.video_stream = None
+
+    def _clear_queue_safely(self, q):
+        """Safely clear a queue without holding the mutex too long."""
+        try:
+            while True:
+                try:
+                    q.get_nowait()
+                except queue.Empty:
+                    break
+        except Exception as e:
+            print(f"Error clearing queue: {e}")
     
     def __del__(self):
         """Destructor to ensure cleanup."""
