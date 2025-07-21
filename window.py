@@ -557,7 +557,7 @@ class MainWindow(tk.Tk):
                 velocity = current_notes_snapshot[note]
                 
                 # Simplified color calculation
-                intensity = min(255, velocity * 2)  # Scale 0-127 to 0-254, cap at 255
+                intensity = 255 - min(255, velocity * 2)  # Scale 0-127 to 0-254, cap at 255
                 color = f"#{255:02x}{intensity:02x}{255:02x}"
                 
                 # Compute row/col
