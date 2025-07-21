@@ -154,12 +154,11 @@ class AudioGenerator:
             return {i: flat[i] for i in range(self.grid_width * self.grid_height)}
 
         # Fallback to brightness
+        logger.error(f"Frame analysis error, couldn't use metric: {metric}")
         processed = simple_metrics['brightness'](frame)
         resized = cv2.resize(processed, (self.grid_width, self.grid_height), interpolation=cv2.INTER_AREA)
         flat = resized.flatten().astype(np.float32) / 255.0
         return {i: flat[i] for i in range(self.grid_width * self.grid_height)}
-
-    # Helper methods added to the class
 
     def _compute_std(self, gray, rh, rw):
         values = {}
@@ -171,7 +170,6 @@ class AudioGenerator:
                 values[idx] = min(std, 1.0)
                 idx += 1
         return values
-
 
     def _compute_color_temp(self, frame, rh, rw):
         values = {}
@@ -185,7 +183,6 @@ class AudioGenerator:
                 values[idx] = (temp + 1.0) / 2.0
                 idx += 1
         return values
-
 
     def _compute_entropy(self, gray, rh, rw):
         from scipy.stats import entropy
@@ -201,7 +198,6 @@ class AudioGenerator:
                 values[idx] = min(ent, 1.0)
                 idx += 1
         return values
-
 
     def metric_to_velocity(self, brightness):
         """Convert brightness value (0-1) to MIDI velocity (0-127)."""
