@@ -4,6 +4,8 @@ import pygame.midi
 import threading
 import numpy as np
 
+from scipy.stats import entropy
+
 from scales import generate_scale_notes, get_available_scales
 
 from typing import Optional
@@ -103,73 +105,104 @@ class AudioGenerator:
     def analyze_frame(self, frame):
         """
         Analyzes a video frame and extracts metric values for each grid region.
-        
-        Args:
-            frame: RGB frame
-            
-        Returns:
-            dict: {region_index: metric_value}
+        Supports metrics: brightness, red_channel, green_channel, blue_channel,
+        hue, saturation, contrast, color_temperature, color_entropy.
         """
+        # Early exit for empty frame
         if frame is None:
             return {}
-        
-        # Handle different metrics
-        if self.metric == "brightness":
-            # Convert to grayscale if needed
-            if len(frame.shape) == 3:
-                gray_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-            else:
-                gray_frame = frame
-            processed_frame = gray_frame
-        elif self.metric in ["red_channel", "green_channel", "blue_channel"]:
-            # Extract specific color channel
-            if len(frame.shape) != 3:
-                return {}  # Need color frame for color channels
-            
-            if self.metric == "red_channel":
-                processed_frame = frame[:, :, 0]  # Red channel
-            elif self.metric == "green_channel":
-                processed_frame = frame[:, :, 1]  # Green channel
-            elif self.metric == "blue_channel":
-                processed_frame = frame[:, :, 2]  # Blue channel
-        elif self.metric == "hue":
-            if len(frame.shape) != 3:
-                return {}
-            hsv_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
-            processed_frame = hsv_frame[:, :, 0]  # Hue channel
-        elif self.metric == "saturation":
-            if len(frame.shape) != 3:
-                return {}
-            hsv_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
-            processed_frame = hsv_frame[:, :, 1]  # Saturation channel
-        else:
-            # Fallback to brightness
-            if len(frame.shape) == 3:
-                processed_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-            else:
-                processed_frame = frame
-        
-        # Resize the processed frame to grid dimensions
-        resized = cv2.resize(processed_frame, (self.grid_width, self.grid_height), 
-                            interpolation=cv2.INTER_AREA)
-        
-        metric_values = {}
-        total_regions = self.grid_width * self.grid_height
-        
-        # Normalize values to 0-1 range
-        if self.metric == "hue":
-            # Hue is in range 0-179 in OpenCV HSV
-            metric_array = resized.flatten() / 179.0
-        else:
-            # All other metrics are 0-255
-            metric_array = resized.flatten() / 255.0
-        
-        for i in range(min(total_regions, len(metric_array))):
-            metric_values[i] = metric_array[i]
-        
-        return metric_values
 
-    
+        # Ensure valid frame dimensions
+        ndim = frame.ndim
+        h, w = frame.shape[:2]
+        rh, rw = h // self.grid_height, w // self.grid_width
+
+        # Prepare processed_frame for simple pixel-based metrics
+        simple_metrics = {
+            'brightness': lambda f: cv2.cvtColor(f, cv2.COLOR_RGB2GRAY) if ndim == 3 else f,
+            'red_channel': lambda f: f[:, :, 0] if ndim == 3 else None,
+            'green_channel': lambda f: f[:, :, 1] if ndim == 3 else None,
+            'blue_channel': lambda f: f[:, :, 2] if ndim == 3 else None,
+            'hue': lambda f: cv2.cvtColor(f, cv2.COLOR_RGB2HSV)[:, :, 0] if ndim == 3 else None,
+            'saturation': lambda f: cv2.cvtColor(f, cv2.COLOR_RGB2HSV)[:, :, 1] if ndim == 3 else None,
+        }
+
+        metric = self.metric
+        # Handle complex per-block metrics separately
+        if metric == 'contrast':
+            gray = simple_metrics['brightness'](frame)
+            return self._compute_std(gray, rh, rw)
+        if metric == 'color_temperature':
+            if ndim != 3:
+                return {}
+            return self._compute_color_temp(frame, rh, rw)
+        if metric == 'color_entropy':
+            gray = simple_metrics['brightness'](frame)
+            return self._compute_entropy(gray, rh, rw)
+
+        # Simple resize-based metrics
+        if metric in simple_metrics:
+            processed = simple_metrics[metric](frame)
+            if processed is None:
+                return {}
+            resized = cv2.resize(processed, (self.grid_width, self.grid_height), interpolation=cv2.INTER_AREA)
+            flat = resized.flatten().astype(np.float32)
+            if metric == 'hue':
+                flat /= 179.0
+            else:
+                flat /= 255.0
+            return {i: flat[i] for i in range(self.grid_width * self.grid_height)}
+
+        # Fallback to brightness
+        processed = simple_metrics['brightness'](frame)
+        resized = cv2.resize(processed, (self.grid_width, self.grid_height), interpolation=cv2.INTER_AREA)
+        flat = resized.flatten().astype(np.float32) / 255.0
+        return {i: flat[i] for i in range(self.grid_width * self.grid_height)}
+
+    # Helper methods added to the class
+
+    def _compute_std(self, gray, rh, rw):
+        values = {}
+        idx = 0
+        for gy in range(self.grid_height):
+            for gx in range(self.grid_width):
+                block = gray[gy*rh:(gy+1)*rh, gx*rw:(gx+1)*rw]
+                std = block.std() / 127.5
+                values[idx] = min(std, 1.0)
+                idx += 1
+        return values
+
+
+    def _compute_color_temp(self, frame, rh, rw):
+        values = {}
+        idx = 0
+        for gy in range(self.grid_height):
+            for gx in range(self.grid_width):
+                block = frame[gy*rh:(gy+1)*rh, gx*rw:(gx+1)*rw]
+                r = block[:, :, 0].mean()
+                b = block[:, :, 2].mean()
+                temp = (r - b) / (r + b + 1e-6)
+                values[idx] = (temp + 1.0) / 2.0
+                idx += 1
+        return values
+
+
+    def _compute_entropy(self, gray, rh, rw):
+        from scipy.stats import entropy
+
+        values = {}
+        idx = 0
+        for gy in range(self.grid_height):
+            for gx in range(self.grid_width):
+                block = gray[gy*rh:(gy+1)*rh, gx*rw:(gx+1)*rw]
+                hist = cv2.calcHist([block], [0], None, [256], [0,256]).flatten()
+                probs = hist / hist.sum() if hist.sum() > 0 else np.zeros_like(hist)
+                ent = entropy(probs, base=2) / 8.0
+                values[idx] = min(ent, 1.0)
+                idx += 1
+        return values
+
+
     def metric_to_velocity(self, brightness):
         """Convert brightness value (0-1) to MIDI velocity (0-127)."""
         velocity = int(brightness * 127 * (self.sensitivity))
@@ -262,7 +295,6 @@ class AudioGenerator:
         with self.state_lock:
             if metric in self.config.AVAILABLE_METRICS:
                 self.metric = metric
-                logger.info(f"Metric changed to: {metric}")
             else:
                 logger.warning(f"Invalid metric: {metric}")
         self.stop_all_notes()  # Stop current notes as metric changed

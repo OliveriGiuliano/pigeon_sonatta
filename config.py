@@ -31,7 +31,10 @@ class AudioConfig:
         "green_channel", 
         "blue_channel", 
         "hue", 
-        "saturation"
+        "saturation",
+        "contrast",
+        "color_temperature",
+        "color_entropy"
     ]
 
 class UIConfig(NamedTuple):

@@ -261,8 +261,6 @@ class MainWindow(tk.Tk):
         if self.audio_generator:
             self.audio_generator.set_metric(self.current_metric)
         
-        logger.info(f"Metric changed to: {self.current_metric}")
-
     def _on_sensitivity_change(self, *args):
         """Handle sensitivity slider change."""
         self.sensitivity = self.sensitivity_var.get()
@@ -469,11 +467,7 @@ class MainWindow(tk.Tk):
             if self.audio_generator:
                 self.audio_generator.set_grid_size(new_width, new_height)
                 self.audio_generator.set_note_range(new_min_note, new_max_note)
-            
-            # Update status labels
-            self.grid_info_label.config(text=f"Grid: {self.grid_width}x{self.grid_height}")
-            self.notes_info_label.config(text=f"Notes: {self.note_range[0]}-{self.note_range[1]}")
-            
+                        
         except ValueError as e:
             messagebox.showerror("Invalid Settings", str(e))
 
@@ -595,10 +589,6 @@ class MainWindow(tk.Tk):
         """Update scale settings in audio generator."""
         if self.audio_generator:
             self.audio_generator.set_scale(self.current_scale, self.current_root_note)
-        
-        # Update status label
-        root_name = self.root_note_var.get() if hasattr(self, 'root_note_var') else 'C'
-        self.scale_info_label.config(text=f"Scale: {self.current_scale} ({root_name})")
 
     def __enter__(self):
         """Context manager entry."""
