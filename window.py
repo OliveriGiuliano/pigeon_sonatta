@@ -2,8 +2,6 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import atexit
 import os
-import threading
-import time
 
 from video import VideoManager  
 from audio import AudioGenerator 
@@ -35,14 +33,16 @@ class MainWindow(tk.Tk):
         self.audio_enabled = False
         
         # Grid settings initialized from config
-        self.grid_width = self.ui_config.DEFAULT_GRID_WIDTH
-        self.grid_height = self.ui_config.DEFAULT_GRID_HEIGHT
-        self.note_range = self.ui_config.DEFAULT_NOTE_RANGE
+        self.grid_width = self.audio_config.DEFAULT_GRID_WIDTH
+        self.grid_height = self.audio_config.DEFAULT_GRID_HEIGHT
+        self.note_range = self.audio_config.DEFAULT_NOTE_RANGE
         
-        # UI Variables
+        # Audio Variables
         self.audio_enabled_var = tk.BooleanVar(value=self.audio_enabled)
-        self.current_scale = "Pentatonic Major"
-        self.current_root_note = 60
+        self.sensitivity = self.audio_config.SENSITIVITY
+        self.sensitivity_var = tk.DoubleVar(value=self.sensitivity)
+        self.current_scale = self.audio_config.SCALE
+        self.current_root_note = self.audio_config.ROOT_NOTE
 
         # Create UI
         self._create_menu()
@@ -189,8 +189,67 @@ class MainWindow(tk.Tk):
         ttk.Checkbutton(group, text="Enable Audio Generation", 
                     variable=self.audio_enabled_var, command=self.toggle_audio).pack(pady=5)
         
+        # Add sensitivity control
+        sens_frame = ttk.Frame(group)
+        sens_frame.pack(pady=5, fill="x")
+        
+        ttk.Label(sens_frame, text="Sensitivity:").pack(side=tk.LEFT)
+        sensitivity_scale = ttk.Scale(sens_frame, from_=0.0, to=10.0, 
+                                    variable=self.sensitivity_var, 
+                                    orient=tk.HORIZONTAL, length=150)
+        sensitivity_scale.pack(side=tk.LEFT, padx=5, fill="x", expand=True)
+        
+        self.sensitivity_label = ttk.Label(sens_frame, text=f"{self.sensitivity:.1f}")
+        self.sensitivity_label.pack(side=tk.LEFT, padx=5)
+        
+        # Bind sensitivity change
+        self.sensitivity_var.trace_add('write', self._on_sensitivity_change)
+
         frame = ttk.Frame(group)
         frame.pack(pady=5, fill="x")
+
+                # --- Note Range ---
+        note_frame = ttk.Frame(group)
+        note_frame.pack(pady=5, fill="x")
+        ttk.Label(note_frame, text="Note Range:").pack(side=tk.LEFT)
+        self.min_note_var = tk.StringVar(value=str(self.note_range[0]))
+        self.max_note_var = tk.StringVar(value=str(self.note_range[1]))
+        
+        ttk.Label(note_frame, text="Min:").pack(side=tk.LEFT, padx=(10, 0))
+        min_spinbox = ttk.Spinbox(note_frame, from_=0, to=127, width=5, textvariable=self.min_note_var)
+        min_spinbox.pack(side=tk.LEFT, padx=5)
+        
+        ttk.Label(note_frame, text="Max:").pack(side=tk.LEFT, padx=(10, 0))
+        max_spinbox = ttk.Spinbox(note_frame, from_=0, to=127, width=5, textvariable=self.max_note_var)
+        max_spinbox.pack(side=tk.LEFT, padx=5)
+        
+        self.min_note_var.trace_add('write', lambda *_: self.update_grid_settings())
+        self.max_note_var.trace_add('write', lambda *_: self.update_grid_settings())
+
+        # --- Scale Settings ---
+        scale_frame = ttk.Frame(group)
+        scale_frame.pack(pady=5, fill="x")
+        ttk.Label(scale_frame, text="Scale:").pack(side=tk.LEFT)
+        self.scale_var = tk.StringVar(value=self.current_scale)
+        scale_combo = ttk.Combobox(scale_frame, textvariable=self.scale_var, values=get_available_scales(), state="readonly", width=15)
+        scale_combo.pack(side=tk.LEFT, padx=5)
+        scale_combo.bind("<<ComboboxSelected>>", self.on_scale_change)
+
+        ttk.Label(scale_frame, text="Root:").pack(side=tk.LEFT, padx=(10, 0))
+        self.root_note_var = tk.StringVar(value="C")
+        note_names = get_note_names()
+        root_combo = ttk.Combobox(scale_frame, textvariable=self.root_note_var, values=note_names, state="readonly", width=5)
+        root_combo.pack(side=tk.LEFT, padx=5)
+        root_combo.bind("<<ComboboxSelected>>", self.on_root_note_change)
+
+    def _on_sensitivity_change(self, *args):
+        """Handle sensitivity slider change."""
+        self.sensitivity = self.sensitivity_var.get()
+        self.sensitivity_label.config(text=f"{self.sensitivity:.1f}")
+        
+        # Update audio generator sensitivity
+        if self.audio_generator:
+            self.audio_generator.set_sensitivity(self.sensitivity)
 
     def _create_status_bar(self):
         status_bar = ttk.Frame(self, relief=tk.SUNKEN)
@@ -241,50 +300,10 @@ class MainWindow(tk.Tk):
         self.grid_width_var.trace_add('write', lambda *_: self.update_grid_settings())
         self.grid_height_var.trace_add('write', lambda *_: self.update_grid_settings())
 
-        # --- Note Range ---
-        note_frame = ttk.Frame(group)
-        note_frame.pack(pady=5, fill="x")
-        ttk.Label(note_frame, text="Note Range:").pack(side=tk.LEFT)
-        self.min_note_var = tk.StringVar(value=str(self.note_range[0]))
-        self.max_note_var = tk.StringVar(value=str(self.note_range[1]))
-        
-        ttk.Label(note_frame, text="Min:").pack(side=tk.LEFT, padx=(10, 0))
-        min_spinbox = ttk.Spinbox(note_frame, from_=0, to=127, width=5, textvariable=self.min_note_var)
-        min_spinbox.pack(side=tk.LEFT, padx=5)
-        
-        ttk.Label(note_frame, text="Max:").pack(side=tk.LEFT, padx=(10, 0))
-        max_spinbox = ttk.Spinbox(note_frame, from_=0, to=127, width=5, textvariable=self.max_note_var)
-        max_spinbox.pack(side=tk.LEFT, padx=5)
-        
-        self.min_note_var.trace_add('write', lambda *_: self.update_grid_settings())
-        self.max_note_var.trace_add('write', lambda *_: self.update_grid_settings())
-
-        # --- Scale Settings ---
-        scale_frame = ttk.Frame(group)
-        scale_frame.pack(pady=5, fill="x")
-        ttk.Label(scale_frame, text="Scale:").pack(side=tk.LEFT)
-        self.scale_var = tk.StringVar(value=self.current_scale)
-        scale_combo = ttk.Combobox(scale_frame, textvariable=self.scale_var, values=get_available_scales(), state="readonly", width=15)
-        scale_combo.pack(side=tk.LEFT, padx=5)
-        scale_combo.bind("<<ComboboxSelected>>", self.on_scale_change)
-
-        ttk.Label(scale_frame, text="Root:").pack(side=tk.LEFT, padx=(10, 0))
-        self.root_note_var = tk.StringVar(value="C")
-        note_names = get_note_names()
-        root_combo = ttk.Combobox(scale_frame, textvariable=self.root_note_var, values=note_names, state="readonly", width=5)
-        root_combo.pack(side=tk.LEFT, padx=5)
-        root_combo.bind("<<ComboboxSelected>>", self.on_root_note_change)
-
     def _init_audio_generator(self):
         """Initialize the audio generator."""
         try:
-            self.audio_generator = AudioGenerator(
-                grid_width=self.grid_width,
-                grid_height=self.grid_height,
-                note_range=self.note_range,
-                scale_name=self.current_scale,
-                root_note=self.current_root_note
-            )
+            self.audio_generator = AudioGenerator()
             self.audio_status_label.config(text="Audio: Initialized")
         except Exception as e:
             logger.error(f"Audio generator initialization error: {e}")

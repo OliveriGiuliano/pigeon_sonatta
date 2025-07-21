@@ -1,13 +1,9 @@
-# audio.py
-import numpy as np
 import cv2
 import pygame
 import pygame.midi
 import threading
-import os
 from scales import generate_scale_notes, get_available_scales
 
-import logging
 from typing import Optional
 
 from config import AudioConfig
@@ -19,23 +15,18 @@ class AudioGenerator:
     """
     Generates MIDI instructions from video frames and synthesizes audio.
     """
-    def __init__(self,
-                config: Optional[AudioConfig] = None,
-                grid_width: int = 4,
-                grid_height: int = 3,
-                note_range: tuple[int, int] = (0, 127),
-                scale_name: str = "Pentatonic Major",
-                root_note: int = 60):
+    def __init__(self, config: Optional[AudioConfig] = None):
         """Initialize the audio generator."""
         self.config = config or AudioConfig()
-        self.grid_width = grid_width
-        self.grid_height = grid_height
-        self.note_range = note_range
-        self.scale_name = scale_name
-        self.root_note = root_note
+        self.grid_width = self.config.DEFAULT_GRID_WIDTH
+        self.grid_height = self.config.DEFAULT_GRID_HEIGHT
+        self.note_range = self.config.DEFAULT_NOTE_RANGE
+        self.scale_name = self.config.SCALE
+        self.root_note = self.config.ROOT_NOTE
+        self.sensitivity = self.config.SENSITIVITY
 
         # Calculate total regions and note mapping
-        self.total_regions = grid_width * grid_height
+        self.total_regions = self.grid_width * self.grid_height
         self.note_map = self._create_note_map()
         
         # Audio state
@@ -136,7 +127,8 @@ class AudioGenerator:
     
     def brightness_to_velocity(self, brightness):
         """Convert brightness value (0-1) to MIDI velocity (0-127)."""
-        return int(brightness * 127)
+        velocity = int(brightness * 127 * (self.sensitivity))
+        return max(0, min(127, velocity))
     
     def generate_midi_events(self, brightness_values: dict[int, float]) -> list[tuple[str, int, int]]:
         """Generate MIDI events from brightness values."""
@@ -286,6 +278,11 @@ class AudioGenerator:
         
         return vis_frame
     
+    def set_sensitivity(self, sensitivity: float):
+        """Set sensitivity multiplier for MIDI generation."""
+        with self.state_lock:
+            self.sensitivity = max(0.0, min(10.0, sensitivity))
+    
     def cleanup(self) -> None:
         """Clean up audio resources."""
         logger.info("Cleaning up audio system...")
@@ -315,11 +312,7 @@ class AudioGenerator:
                 pygame.midi.quit()
             if pygame.mixer.get_init():
                 pygame.mixer.quit()
-
-            with self.note_lock:
-                self.current_notes.clear()
-                self._current_notes_snapshot.clear()
-                
+                    
             self.is_initialized = False
             logger.info("Audio system cleaned up successfully.")
             

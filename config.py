@@ -17,14 +17,18 @@ class AudioConfig:
     NOTE_OFF_THRESHOLD: float = 0.05 # Brightness threshold to release a note (0-1)
     VELOCITY_CHANGE_THRESHOLD: int = 10 # Min change in velocity (0-127) to re-trigger a note
     # MIDI value ranges
-    MIDI_NOTE_RANGE: tuple[int, int] = (0, 127)
+    MIDI_NOTE_RANGE: tuple[int, int] = (0, 127) # Midi standard
+    DEFAULT_NOTE_RANGE: tuple = (40, 127) # Our range
+    SCALE: str = "Pentatonic Major"
+    SENSITIVITY: float = 1.0
+    ROOT_NOTE: int = 60
+    DEFAULT_GRID_WIDTH: int = 20
+    DEFAULT_GRID_HEIGHT: int = 1
 
 class UIConfig(NamedTuple):
     """UI configuration constants."""
     WINDOW_GEOMETRY: str = '900x700'
-    DEFAULT_GRID_WIDTH: int = 20
-    DEFAULT_GRID_HEIGHT: int = 1
-    DEFAULT_NOTE_RANGE: tuple = (40, 127)
+
 
 @dataclass
 class LogConfig:
