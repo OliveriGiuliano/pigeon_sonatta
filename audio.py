@@ -7,28 +7,35 @@ import threading
 import os
 from scales import generate_scale_notes, get_available_scales
 
+import logging
+from typing import Optional
+
+from config import AudioConfig
+from logger import StructuredLogger
+
+logger = StructuredLogger.get_logger(__name__)
+
 class AudioGenerator:
     """
     Generates MIDI instructions from video frames and synthesizes audio using soundfonts.
     """
-    def __init__(self, grid_width=4, grid_height=3, note_range=(0, 127), soundfont_path=None, scale_name="Pentatonic Major", root_note=60):
-        """
-        Initialize the audio generator.
-        
-        Args:
-            grid_width (int): Number of horizontal grid divisions
-            grid_height (int): Number of vertical grid divisions
-            note_range (tuple): (min_note, max_note) MIDI note range
-            soundfont_path (str): Path to soundfont file (.sf2)
-        """
+    def __init__(self,
+                config: Optional[AudioConfig] = None,
+                grid_width: int = 4,
+                grid_height: int = 3,
+                note_range: tuple[int, int] = (0, 127),
+                soundfont_path: Optional[str] = None,
+                scale_name: str = "Pentatonic Major",
+                root_note: int = 60):
+        """Initialize the audio generator."""
+        self.config = config or AudioConfig()
         self.grid_width = grid_width
         self.grid_height = grid_height
         self.note_range = note_range
         self.soundfont_path = soundfont_path
-
         self.scale_name = scale_name
         self.root_note = root_note
-        
+
         # Calculate total regions and note mapping
         self.total_regions = grid_width * grid_height
         self.note_map = self._create_note_map()
@@ -36,18 +43,10 @@ class AudioGenerator:
         # Audio state
         self.is_initialized = False
         self.midi_out = None
-        self.current_notes = {}  # Track currently playing notes
+        self.current_notes: dict[int, int] = {}  # {note: velocity}
         self.note_lock = threading.Lock()
-        self.state_lock = threading.Lock()  # For general state changes
-        self._current_notes_snapshot = {}  # Thread-safe snapshot for UI
-        
-        # Processing state
-        self.is_processing = False
-        self.processing_thread = None
-
-        self.note_on_threshold = 0.1   # 0 to 1
-        self.note_off_threshold = 0.05
-        self.change_velocity_threshold = 10 # 0 to 127
+        self.state_lock = threading.Lock()
+        self._current_notes_snapshot: dict[int, int] = {}
         
         # Initialize pygame mixer for soundfont playback
         self._initialize_audio()
@@ -83,40 +82,35 @@ class AudioGenerator:
         """Return list of available scales."""
         return get_available_scales()
     
-    def _initialize_audio(self):
+    def _initialize_audio(self) -> bool:
         """Initialize pygame mixer and MIDI output."""
         try:
-            # Initialize pygame mixer
-            pygame.mixer.pre_init(frequency=44100, size=-16, channels=2, buffer=512)
+            pygame.mixer.pre_init(
+                frequency=self.config.DEFAULT_FREQUENCY,
+                size=-16,
+                channels=2,
+                buffer=self.config.BUFFER_SIZE
+            )
             pygame.mixer.init()
-            
-            # Initialize MIDI
             pygame.midi.init()
             
-            # Find default MIDI output device
             midi_device_id = pygame.midi.get_default_output_id()
             if midi_device_id == -1:
-                print("No MIDI output device found")
+                logger.warning("No MIDI output device found.")
                 return False
                 
             self.midi_out = pygame.midi.Output(midi_device_id)
             
-            # Load soundfont if available
             if self.soundfont_path and os.path.exists(self.soundfont_path):
-                try:
-                    # Note: pygame doesn't directly support soundfonts
-                    # For full soundfont support, you'd need fluidsynth or similar
-                    print(f"Soundfont path set: {self.soundfont_path}")
-                    print("Note: Full soundfont support requires fluidsynth integration")
-                except Exception as e:
-                    print(f"Soundfont loading error: {e}")
+                logger.info(f"Soundfont path set: {self.soundfont_path}")
+                logger.info("Note: Full soundfont support requires fluidsynth integration.")
             
             self.is_initialized = True
-            print("Audio system initialized successfully")
+            logger.info("Audio system initialized successfully.")
             return True
             
         except Exception as e:
-            print(f"Audio initialization error: {e}")
+            logger.error(f"Audio initialization error: {e}", exc_info=True)
             return False
     
     def analyze_frame(self, frame):
@@ -151,17 +145,8 @@ class AudioGenerator:
         """Convert brightness value (0-1) to MIDI velocity (0-127)."""
         return int(brightness * 127)
     
-    def generate_midi_events(self, brightness_values, velocity_threshold=0.1):
-        """
-        Generate MIDI events from brightness values.
-        
-        Args:
-            brightness_values (dict): {region_index: brightness_value}
-            velocity_threshold (float): DEPRECATED, Minimum brightness to trigger note 
-            
-        Returns:
-            list: MIDI events [(action, note, velocity), ...]
-        """
+    def generate_midi_events(self, brightness_values: dict[int, float]) -> list[tuple[str, int, int]]:
+        """Generate MIDI events from brightness values."""
         midi_events = []
         
         with self.note_lock:
@@ -172,30 +157,23 @@ class AudioGenerator:
                 note = self.note_map[region_index]
                 velocity = self.brightness_to_velocity(brightness)
                 
-                # Check if note should be playing
-                should_play = brightness > self.note_on_threshold
-                should_stop = brightness > self.note_off_threshold
                 is_playing = note in self.current_notes
-                
+                should_play = brightness > self.config.NOTE_ON_THRESHOLD
+                should_stop = brightness <= self.config.NOTE_OFF_THRESHOLD
+
                 if should_play and not is_playing:
-                    # Start note
                     midi_events.append(('note_on', note, velocity))
                     self.current_notes[note] = velocity
-                    
                 elif should_play and is_playing:
-                    # Update velocity if significantly different
                     current_velocity = self.current_notes[note]
-                    if abs(velocity - current_velocity) > self.change_velocity_threshold:
+                    if abs(velocity - current_velocity) > self.config.VELOCITY_CHANGE_THRESHOLD:
                         midi_events.append(('note_off', note, current_velocity))
                         midi_events.append(('note_on', note, velocity))
                         self.current_notes[note] = velocity
-                        
-                elif not should_stop and is_playing:  # Fixed logic
-                    # Stop note
-                    midi_events.append(('note_off', note, self.current_notes[note]))
+                elif should_stop and is_playing:
+                    midi_events.append(('note_off', note, self.current_notes.get(note, 0)))
                     del self.current_notes[note]
             
-            # Update thread-safe snapshot for UI
             self._current_notes_snapshot = self.current_notes.copy()
         
         return midi_events
@@ -217,7 +195,7 @@ class AudioGenerator:
                 elif action == 'note_off':
                     self.midi_out.note_off(note, velocity)
             except Exception as e:
-                print(f"MIDI playback error: {e}")
+                logger.error(f"MIDI playback error: {e}")
     
     def process_frame(self, frame):
         """
@@ -246,16 +224,16 @@ class AudioGenerator:
                     if self.midi_out:
                         self.midi_out.note_off(note, self.current_notes[note])
                 except Exception as e:
-                    print(f"Error stopping note {note}: {e}")
+                    logger.error(f"Error stopping note {note}: {e}")
             self.current_notes.clear()
     
     def set_soundfont(self, soundfont_path):
         """Set a new soundfont file."""
         self.soundfont_path = soundfont_path
         if os.path.exists(soundfont_path):
-            print(f"Soundfont set to: {soundfont_path}")
+            logger.info(f"Soundfont set to: {soundfont_path}")
         else:
-            print(f"Soundfont file not found: {soundfont_path}")
+            logger.error(f"Soundfont file not found: {soundfont_path}")
     
     def set_grid_size(self, width, height):
         """Change grid size and recalculate note mapping."""
@@ -323,47 +301,36 @@ class AudioGenerator:
         
         return vis_frame
     
-    def cleanup(self):
+    def cleanup(self) -> None:
         """Clean up audio resources."""
+        logger.info("Cleaning up audio system...")
         try:
             self.stop_all_notes()
             
-            # Close MIDI output with error handling
             if self.midi_out:
                 try:
-                    # Send all notes off message
                     for channel in range(16):
-                        self.midi_out.write_short(0xB0 | channel, 123, 0)  # All notes off
-                        self.midi_out.write_short(0xB0 | channel, 120, 0)  # All sound off
+                        self.midi_out.write_short(0xB0 | channel, 123, 0)
                     self.midi_out.close()
                 except Exception as e:
-                    print(f"Error closing MIDI output: {e}")
+                    logger.error(f"Error closing MIDI output: {e}", exc_info=True)
                 finally:
                     self.midi_out = None
             
-            # Clean up pygame resources
-            if pygame.mixer.get_init():
-                try:
-                    pygame.mixer.quit()
-                except Exception as e:
-                    print(f"Error quitting pygame mixer: {e}")
-                    
             if pygame.midi.get_init():
-                try:
-                    pygame.midi.quit()
-                except Exception as e:
-                    print(f"Error quitting pygame midi: {e}")
-                    
-            # Clear state
+                pygame.midi.quit()
+            if pygame.mixer.get_init():
+                pygame.mixer.quit()
+
             with self.note_lock:
                 self.current_notes.clear()
                 self._current_notes_snapshot.clear()
                 
             self.is_initialized = False
-            print("Audio system cleaned up successfully")
+            logger.info("Audio system cleaned up successfully.")
             
         except Exception as e:
-            print(f"Audio cleanup error: {e}")
+            logger.error(f"An error occurred during audio cleanup: {e}", exc_info=True)
     
     def __del__(self):
         """Destructor to ensure cleanup."""

@@ -10,35 +10,42 @@ from audio import AudioGenerator
 
 from scales import get_available_scales, get_note_names
 
+from typing import Optional
+from config import UIConfig, AudioConfig, VideoConfig
+from logger import StructuredLogger
+
+logger = StructuredLogger.get_logger(__name__)
+
 class MainWindow(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Video-to-MIDI Generator")
-        self.geometry("900x700")
 
-        self.video_manager = None
-        self.current_video_path = None
+        # Centralized configuration
+        self.ui_config = UIConfig()
+        self.audio_config = AudioConfig()
+        self.video_config = VideoConfig()
+
+        self.geometry(self.ui_config.WINDOW_GEOMETRY)
+
+        self.video_manager: Optional[VideoManager] = None
+        self.current_video_path: Optional[str] = None
         
-        # Audio generator
-        self.audio_generator = None
+        self.audio_generator: Optional[AudioGenerator] = None
         self.audio_enabled = False
-        self.current_soundfont = None
+        self.current_soundfont: Optional[str] = None
         
-        # Grid settings
-        self.grid_width = 20
-        self.grid_height = 1
-        self.note_range = (40, 85)
-        
-        # Frame processing
-        self.frame_processing_thread = None
-        self.stop_frame_processing = False
+        # Grid settings initialized from config
+        self.grid_width = self.ui_config.DEFAULT_GRID_WIDTH
+        self.grid_height = self.ui_config.DEFAULT_GRID_HEIGHT
+        self.note_range = self.ui_config.DEFAULT_NOTE_RANGE
         
         # UI Variables
-        self.audio_enabled_var = tk.BooleanVar(value=False)
-
+        self.audio_enabled_var = tk.BooleanVar(value=self.audio_enabled)
         self.current_scale = "Pentatonic Major"
         self.current_root_note = 60
 
+        # Create UI
         self._create_menu()
         self._create_main_layout()
         self._create_status_bar()
@@ -104,129 +111,163 @@ class MainWindow(tk.Tk):
 
         self.config(menu=menubar)
 
-    def _create_main_layout(self):
+    def _create_main_layout(self) -> None:
+        """Creates the main paned layout of the application."""
         paned = ttk.Panedwindow(self, orient=tk.HORIZONTAL)
         paned.pack(fill=tk.BOTH, expand=True)
 
-        # Video display frame - now split into video and grid
-        self.video_frame = ttk.Frame(paned, relief=tk.SUNKEN)
+        video_area = self._create_video_area(paned)
+        control_panel = self._create_control_panel(paned)
+        
+        paned.add(video_area, weight=3)
+        paned.add(control_panel, weight=1)
+
+        # Initialize video after frame is created and mapped
+        self.video_frame.bind("<Map>", self._init_video_manager)
+
+    # In window.py, add the following new helper methods to the MainWindow class
+    def _create_video_area(self, parent: ttk.Panedwindow) -> ttk.Frame:
+        """Creates the frame containing the video panel and grid display."""
+        self.video_frame = ttk.Frame(parent, relief=tk.SUNKEN)
         self.video_frame.config(width=500, height=400)
         self.video_frame.pack_propagate(False)
-        paned.add(self.video_frame, weight=3)
         
-        # Split the video frame vertically
         video_paned = ttk.Panedwindow(self.video_frame, orient=tk.VERTICAL)
         video_paned.pack(fill=tk.BOTH, expand=True)
         
-        # Top part: video panel (70% of height)
-        self.video_panel = tk.Label(video_paned) 
+        self.video_panel = tk.Label(video_paned)
         video_paned.add(self.video_panel, weight=7)
         
-        # Bottom part: Grid display (30% of height)
         self.grid_frame = ttk.Frame(video_paned, relief=tk.SUNKEN)
         video_paned.add(self.grid_frame, weight=3)
         
-        # Create grid canvas in the bottom part
         self.grid_canvas = tk.Canvas(self.grid_frame, highlightthickness=0)
         self.grid_canvas.pack(fill=tk.BOTH, expand=True)
-
-        # Rest of the method remains the same...
-        # Control panel frame
-        control_frame = ttk.Frame(paned, relief=tk.RAISED)
-        control_frame.config(width=400)
         
-        # Add scrollable frame for controls
+        return self.video_frame
+
+    def _create_control_panel(self, parent: ttk.Panedwindow) -> ttk.Frame:
+        """Creates the scrollable control panel on the right."""
+        control_frame = ttk.Frame(parent, relief=tk.RAISED, width=400)
+        
         canvas = tk.Canvas(control_frame)
         scrollbar = ttk.Scrollbar(control_frame, orient="vertical", command=canvas.yview)
         scrollable_frame = ttk.Frame(canvas)
 
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-
+        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
-
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
         
-        # Control Panel Header
         ttk.Label(scrollable_frame, text="Control Panel", font=("Arial", 12, "bold")).pack(pady=10)
         
-        # Video controls
-        video_group = ttk.LabelFrame(scrollable_frame, text="Video Controls")
-        video_group.pack(pady=10, padx=10, fill="x")
+        # Create control groups
+        self._create_video_controls(scrollable_frame)
+        self._create_audio_controls(scrollable_frame)
+        self._create_grid_settings(scrollable_frame)
+        self._create_status_info(scrollable_frame)
         
-        video_controls = ttk.Frame(video_group)
-        video_controls.pack(pady=10)
+        return control_frame
+
+    def _create_video_controls(self, parent: ttk.Frame) -> None:
+        """Creates the video playback control buttons."""
+        group = ttk.LabelFrame(parent, text="Video Controls")
+        group.pack(pady=10, padx=10, fill="x")
         
-        ttk.Button(video_controls, text="Play", command=self.play_video).pack(side=tk.LEFT, padx=5)
-        ttk.Button(video_controls, text="Pause", command=self.pause_video).pack(side=tk.LEFT, padx=5)
-        ttk.Button(video_controls, text="Stop", command=self.stop_video).pack(side=tk.LEFT, padx=5)
+        controls = ttk.Frame(group)
+        controls.pack(pady=10)
         
-        # Reload button for debugging
-        ttk.Button(video_group, text="Reload Video", command=self.reload_video).pack(pady=5)
+        ttk.Button(controls, text="Play", command=self.play_video).pack(side=tk.LEFT, padx=5)
+        ttk.Button(controls, text="Pause", command=self.pause_video).pack(side=tk.LEFT, padx=5)
+        ttk.Button(controls, text="Stop", command=self.stop_video).pack(side=tk.LEFT, padx=5)
+        ttk.Button(group, text="Reload Video", command=self.reload_video).pack(pady=5)
+
+    def _create_audio_controls(self, parent: ttk.Frame) -> None:
+        """Creates the audio generation control widgets."""
+        group = ttk.LabelFrame(parent, text="Audio Controls")
+        group.pack(pady=10, padx=10, fill="x")
         
-        # Audio controls
-        audio_group = ttk.LabelFrame(scrollable_frame, text="Audio Controls")
-        audio_group.pack(pady=10, padx=10, fill="x")
+        ttk.Checkbutton(group, text="Enable Audio Generation", 
+                    variable=self.audio_enabled_var, command=self.toggle_audio).pack(pady=5)
         
-        ttk.Checkbutton(audio_group, text="Enable Audio Generation", 
-                       variable=self.audio_enabled_var, command=self.toggle_audio).pack(pady=5)
-        
-        soundfont_frame = ttk.Frame(audio_group)
-        soundfont_frame.pack(pady=5, fill="x")
-        ttk.Button(soundfont_frame, text="Select Soundfont", command=self.select_soundfont).pack(side=tk.LEFT, padx=5)
-        self.soundfont_label = ttk.Label(soundfont_frame, text="No soundfont selected")
+        frame = ttk.Frame(group)
+        frame.pack(pady=5, fill="x")
+        ttk.Button(frame, text="Select Soundfont", command=self.select_soundfont).pack(side=tk.LEFT, padx=5)
+        self.soundfont_label = ttk.Label(frame, text="No soundfont selected")
         self.soundfont_label.pack(side=tk.LEFT, padx=5)
+
+    def _create_status_bar(self):
+        status_bar = ttk.Frame(self, relief=tk.SUNKEN)
+        status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+        self.status_msg = ttk.Label(status_bar, text="Ready")
+        self.status_msg.pack(side=tk.LEFT, padx=5)
+        self.stats_lbl = ttk.Label(status_bar, text="FPS: -- | Target FPS: -- | Latency: -- | Target Latency: --")
+        self.stats_lbl.pack(side=tk.RIGHT, padx=5)
+
+    def _create_status_info(self, parent: ttk.Frame) -> None:
+        """Creates the status information display panel."""
+        group = ttk.LabelFrame(parent, text="Status")
+        group.pack(pady=10, padx=10, fill="x")
         
-        # Grid settings
-        grid_group = ttk.LabelFrame(scrollable_frame, text="Grid Settings")
-        grid_group.pack(pady=10, padx=10, fill="x")
+        self.audio_status_label = ttk.Label(group, text="Audio: Disabled")
+        self.audio_status_label.pack(pady=2, anchor="w", padx=5)
         
-        # Grid size
-        grid_size_frame = ttk.Frame(grid_group)
-        grid_size_frame.pack(pady=5, fill="x")
-        ttk.Label(grid_size_frame, text="Grid Size:").pack(side=tk.LEFT)
+        self.grid_info_label = ttk.Label(group, text=f"Grid: {self.grid_width}x{self.grid_height}")
+        self.grid_info_label.pack(pady=2, anchor="w", padx=5)
         
+        self.notes_info_label = ttk.Label(group, text=f"Notes: {self.note_range[0]}-{self.note_range[1]}")
+        self.notes_info_label.pack(pady=2, anchor="w", padx=5)
+
+        root_note_name = self.root_note_var.get() if hasattr(self, 'root_note_var') else 'C'
+        self.scale_info_label = ttk.Label(group, text=f"Scale: {self.current_scale} ({root_note_name})")
+        self.scale_info_label.pack(pady=2, anchor="w", padx=5)
+
+    def _create_grid_settings(self, parent: ttk.Frame) -> None:
+        """Creates the widgets for configuring the grid, note range, and scale."""
+        group = ttk.LabelFrame(parent, text="Grid Settings")
+        group.pack(pady=10, padx=10, fill="x")
+
+        # --- Grid Size ---
+        size_frame = ttk.Frame(group)
+        size_frame.pack(pady=5, fill="x")
+        ttk.Label(size_frame, text="Grid Size:").pack(side=tk.LEFT)
         self.grid_width_var = tk.StringVar(value=str(self.grid_width))
         self.grid_height_var = tk.StringVar(value=str(self.grid_height))
         
-        ttk.Label(grid_size_frame, text="Width:").pack(side=tk.LEFT, padx=(10, 0))
-        width_spinbox = ttk.Spinbox(grid_size_frame, from_=1, to=127, width=5, textvariable=self.grid_width_var, command=self.update_grid_settings)
+        ttk.Label(size_frame, text="Width:").pack(side=tk.LEFT, padx=(10, 0))
+        width_spinbox = ttk.Spinbox(size_frame, from_=1, to=127, width=5, textvariable=self.grid_width_var)
         width_spinbox.pack(side=tk.LEFT, padx=5)
-
-        ttk.Label(grid_size_frame, text="Height:").pack(side=tk.LEFT, padx=(10, 0))
-        height_spinbox = ttk.Spinbox(grid_size_frame, from_=1, to=127, width=5, textvariable=self.grid_height_var, command=self.update_grid_settings)
-        height_spinbox.pack(side=tk.LEFT, padx=5)
-                
-        # Note range
-        note_range_frame = ttk.Frame(grid_group)
-        note_range_frame.pack(pady=5, fill="x")
-        ttk.Label(note_range_frame, text="Note Range:").pack(side=tk.LEFT)
         
+        ttk.Label(size_frame, text="Height:").pack(side=tk.LEFT, padx=(10, 0))
+        height_spinbox = ttk.Spinbox(size_frame, from_=1, to=127, width=5, textvariable=self.grid_height_var)
+        height_spinbox.pack(side=tk.LEFT, padx=5)
+        
+        self.grid_width_var.trace_add('write', lambda *_: self.update_grid_settings())
+        self.grid_height_var.trace_add('write', lambda *_: self.update_grid_settings())
+
+        # --- Note Range ---
+        note_frame = ttk.Frame(group)
+        note_frame.pack(pady=5, fill="x")
+        ttk.Label(note_frame, text="Note Range:").pack(side=tk.LEFT)
         self.min_note_var = tk.StringVar(value=str(self.note_range[0]))
         self.max_note_var = tk.StringVar(value=str(self.note_range[1]))
         
-        ttk.Label(note_range_frame, text="Min:").pack(side=tk.LEFT, padx=(10, 0))
-        min_spinbox = ttk.Spinbox(note_range_frame, from_=0, to=127, width=5, textvariable=self.min_note_var, command=self.update_grid_settings)
+        ttk.Label(note_frame, text="Min:").pack(side=tk.LEFT, padx=(10, 0))
+        min_spinbox = ttk.Spinbox(note_frame, from_=0, to=127, width=5, textvariable=self.min_note_var)
         min_spinbox.pack(side=tk.LEFT, padx=5)
-
-        ttk.Label(note_range_frame, text="Max:").pack(side=tk.LEFT, padx=(10, 0))
-        max_spinbox = ttk.Spinbox(note_range_frame, from_=0, to=127, width=5, textvariable=self.max_note_var, command=self.update_grid_settings)
-        max_spinbox.pack(side=tk.LEFT, padx=5)
-
-        self.grid_width_var.trace('w', lambda name, index, mode: self.update_grid_settings())
-        self.grid_height_var.trace('w', lambda name, index, mode: self.update_grid_settings())
-        self.min_note_var.trace('w', lambda name, index, mode: self.update_grid_settings())
-        self.max_note_var.trace('w', lambda name, index, mode: self.update_grid_settings())
         
-        # Scale settings
-        scale_frame = ttk.Frame(grid_group)
+        ttk.Label(note_frame, text="Max:").pack(side=tk.LEFT, padx=(10, 0))
+        max_spinbox = ttk.Spinbox(note_frame, from_=0, to=127, width=5, textvariable=self.max_note_var)
+        max_spinbox.pack(side=tk.LEFT, padx=5)
+        
+        self.min_note_var.trace_add('write', lambda *_: self.update_grid_settings())
+        self.max_note_var.trace_add('write', lambda *_: self.update_grid_settings())
+
+        # --- Scale Settings ---
+        scale_frame = ttk.Frame(group)
         scale_frame.pack(pady=5, fill="x")
         ttk.Label(scale_frame, text="Scale:").pack(side=tk.LEFT)
-
         self.scale_var = tk.StringVar(value=self.current_scale)
         scale_combo = ttk.Combobox(scale_frame, textvariable=self.scale_var, values=get_available_scales(), state="readonly", width=15)
         scale_combo.pack(side=tk.LEFT, padx=5)
@@ -238,39 +279,6 @@ class MainWindow(tk.Tk):
         root_combo = ttk.Combobox(scale_frame, textvariable=self.root_note_var, values=note_names, state="readonly", width=5)
         root_combo.pack(side=tk.LEFT, padx=5)
         root_combo.bind("<<ComboboxSelected>>", self.on_root_note_change)
-
-        # Display settings
-        display_group = ttk.LabelFrame(scrollable_frame, text="Display Settings")
-        display_group.pack(pady=10, padx=10, fill="x")
-        
-        # Status info
-        status_group = ttk.LabelFrame(scrollable_frame, text="Status")
-        status_group.pack(pady=10, padx=10, fill="x")
-        
-        self.audio_status_label = ttk.Label(status_group, text="Audio: Disabled")
-        self.audio_status_label.pack(pady=2)
-        
-        self.grid_info_label = ttk.Label(status_group, text=f"Grid: {self.grid_width}x{self.grid_height}")
-        self.grid_info_label.pack(pady=2)
-        
-        self.notes_info_label = ttk.Label(status_group, text=f"Notes: {self.note_range[0]}-{self.note_range[1]}")
-        self.notes_info_label.pack(pady=2)
-
-        self.scale_info_label = ttk.Label(status_group, text=f"Scale: {self.current_scale} ({self.root_note_var.get() if hasattr(self, 'root_note_var') else 'C'})")
-        self.scale_info_label.pack(pady=2)
-        
-        paned.add(control_frame, weight=1)
-
-        # Initialize video after frame is created and mapped
-        self.video_frame.bind("<Map>", self._init_video_manager)
-
-    def _create_status_bar(self):
-        status_bar = ttk.Frame(self, relief=tk.SUNKEN)
-        status_bar.pack(side=tk.BOTTOM, fill=tk.X)
-        self.status_msg = ttk.Label(status_bar, text="Ready")
-        self.status_msg.pack(side=tk.LEFT, padx=5)
-        self.stats_lbl = ttk.Label(status_bar, text="FPS: -- | Target FPS: -- | Latency: -- | Target Latency: --")
-        self.stats_lbl.pack(side=tk.RIGHT, padx=5)
 
     def _init_audio_generator(self):
         """Initialize the audio generator."""
@@ -285,7 +293,7 @@ class MainWindow(tk.Tk):
             )
             self.audio_status_label.config(text="Audio: Initialized")
         except Exception as e:
-            print(f"Audio generator initialization error: {e}")
+            logger.error(f"Audio generator initialization error: {e}")
             self.audio_status_label.config(text="Audio: Error")
             messagebox.showerror("Audio Error", f"Failed to initialize audio system:\n{e}")
 
@@ -304,13 +312,13 @@ class MainWindow(tk.Tk):
                 # Ensure the frame is fully mapped before initializing video
                 self.video_frame.update_idletasks()
                 self.video_manager = VideoManager(self.video_panel, frame_callback=self._process_frame)
-                print("Video manager initialized successfully")
+                logger.info("Video manager initialized successfully")
                 
                 # Rebind window handle on resize
                 self.video_frame.bind("<Configure>", self._on_frame_configure)
                 
             except Exception as e:
-                print(f"Video initialization failed: {e}")
+                logger.error(f"Video initialization failed: {e}")
                 self.status_msg.config(text=f"Video Error: {e}")
 
     def _process_frame(self, frame):
@@ -322,7 +330,7 @@ class MainWindow(tk.Tk):
             # Process frame through audio generator
             self.audio_generator.process_frame(frame)
         except Exception as e:
-            print(f"Frame processing error: {e}")
+            logger.error(f"Frame processing error: {e}")
 
     def open_video(self):
         path = filedialog.askopenfilename(
@@ -355,7 +363,7 @@ class MainWindow(tk.Tk):
             self.after(500, lambda: self._start_video_playback(path))
             
         except Exception as e:
-            print(f"Video loading error: {e}")
+            logger.error(f"Video loading error: {e}")
             self.status_msg.config(text=f"Error loading video: {e}")
             messagebox.showerror("Video Error", f"Failed to load video:\n{e}")
 
@@ -368,7 +376,7 @@ class MainWindow(tk.Tk):
             self.after(100, self._update_stats)
             self.after(50, self._process_ui_updates)  # Add this line
         except Exception as e:
-            print(f"Playback error: {e}")
+            logger.error(f"Playback error: {e}")
             self.status_msg.config(text=f"Playback error: {e}")
 
     def _process_ui_updates(self):
@@ -385,7 +393,7 @@ class MainWindow(tk.Tk):
     def reload_video(self):
         """Reload the current video - useful for debugging."""
         if self.current_video_path:
-            print(f"Reloading video: {self.current_video_path}")
+            logger.info(f"Reloading video: {self.current_video_path}")
             self._load_video(self.current_video_path)
 
     def play_video(self):
@@ -609,13 +617,6 @@ class MainWindow(tk.Tk):
         cleanup_errors = []
         
         try:
-            # Stop frame processing thread
-            self.stop_frame_processing = True
-            if self.frame_processing_thread and self.frame_processing_thread.is_alive():
-                self.frame_processing_thread.join(timeout=1.0)
-                if self.frame_processing_thread.is_alive():
-                    cleanup_errors.append("Frame processing thread did not terminate")
-            
             # Clean up audio generator
             if self.audio_generator:
                 try:
@@ -635,14 +636,14 @@ class MainWindow(tk.Tk):
                     self.video_manager = None
                     
             if cleanup_errors:
-                print(f"Cleanup completed with errors: {'; '.join(cleanup_errors)}")
+                logger.error(f"Cleanup completed with errors: {'; '.join(cleanup_errors)}")
             else:
-                print("Cleanup completed successfully")
+                logger.info("Cleanup completed successfully")
                 
         except Exception as e:
-            print(f"Critical cleanup error: {e}")
+            logger.error(f"Critical cleanup error: {e}")
 
     def on_closing(self):
-        print("Closing application...")
+        logger.info("Closing application...")
         self.cleanup()
         self.destroy()

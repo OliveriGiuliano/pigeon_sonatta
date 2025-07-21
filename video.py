@@ -7,9 +7,11 @@ import time
 import numpy as np
 import cv2
 
-# Constants for queue sizes to manage memory usage
-DISPLAY_QUEUE_SIZE = 20
-PROCESSING_QUEUE_SIZE = 200
+from typing import Optional, Callable
+from config import VideoConfig
+from logger import StructuredLogger
+
+logger = StructuredLogger.get_logger(__name__)
 
 class VideoManager:
     """
@@ -17,45 +19,41 @@ class VideoManager:
     It handles decoding, display, and frame processing in separate threads for
     better performance and synchronization.
     """
-    def __init__(self, video_panel, frame_callback=None):
-        """
-        Initializes the VideoManager.
-
-        Args:
-            video_panel (tk.Widget): The Tkinter Label or widget to display video frames.
-            frame_callback (function, optional): A callback function to process video frames.
-        """
+    def __init__(self,
+                video_panel: tk.Widget,
+                frame_callback: Optional[Callable[[np.ndarray], None]] = None,
+                config: Optional[VideoConfig] = None):
+        """Initializes the VideoManager."""
         self.video_panel = video_panel
         self.frame_callback = frame_callback
+        self.config = config or VideoConfig()
 
         # PyAV and video state
-        self.container = None
-        self.video_stream = None
-        self.fps = 0 # original video fps
-        self.current_time = 0.0
+        self.container: Optional[av.container.Container] = None
+        self.video_stream: Optional[av.video.stream.VideoStream] = None
+        self.fps: float = 0.0
+        self.current_time: float = 0.0
 
         # Threading and queueing infrastructure
-        self.display_queue = queue.Queue(maxsize=DISPLAY_QUEUE_SIZE)
-        self.processing_queue = queue.Queue(maxsize=PROCESSING_QUEUE_SIZE)
+        self.display_queue: queue.Queue = queue.Queue(maxsize=self.config.DISPLAY_QUEUE_SIZE)
+        self.processing_queue: queue.Queue = queue.Queue(maxsize=self.config.PROCESSING_QUEUE_SIZE)
+        self.ui_update_queue: queue.Queue = queue.Queue(maxsize=self.config.UI_UPDATE_QUEUE_SIZE)
 
-        self.decoder_thread = None
-        self.display_thread = None
-        self.processing_thread = None
-        self.ui_update_queue = queue.Queue(maxsize=50)  # Add this line
-
+        self.decoder_thread: Optional[threading.Thread] = None
+        self.display_thread: Optional[threading.Thread] = None
+        self.processing_thread: Optional[threading.Thread] = None
+        
         self.stop_event = threading.Event()
         self.pause_event = threading.Event()
 
-         # state lock for thread safety
+        # state lock for thread safety
         self._state_lock = threading.Lock()
         self._is_playing = False
 
-        self._is_playing = False
-
-        self.current_fps = 0 #fps of our video display, depends on performance
-        self.processing_latency = 0.0
-        self._frame_count = 0
-        self._frame_count_start_time = time.time()
+        self.current_fps: float = 0.0
+        self.processing_latency: float = 0.0
+        self._frame_count: int = 0
+        self._frame_count_start_time: float = time.time()
 
     def open(self, path):
         """Opens a video file, sets up streams, and starts the decoder thread."""
@@ -70,7 +68,7 @@ class VideoManager:
             try:
                 self.video_stream.codec_context.thread_count = 0  # Auto-detect threads
             except Exception as e:
-                print(f"Could not set thread count: {e}")
+                logger.warning(f"Could not set thread count: {e}")
 
             self.stop_event.clear()
             self.pause_event.clear()
@@ -80,7 +78,7 @@ class VideoManager:
             self.decoder_thread.start()
 
         except av.AVError as e:
-            print(f"Error opening video file with PyAV: {e}")
+            logger.error(f"Error opening video file with PyAV: {e}")
             self.cleanup()
             raise
 
@@ -161,7 +159,7 @@ class VideoManager:
                     next_frame_time = time.time()
                     
             except Exception as e:
-                print(f"Decoder loop error: {e}")
+                logger.error(f"Decoder loop error: {e}")
                 break
         
         # Safely update playing state
@@ -207,7 +205,7 @@ class VideoManager:
                 if not self._is_playing and not self.pause_event.is_set():
                     break
             except Exception as e:
-                print(f"Display loop error: {e}")
+                logger.error(f"Display loop error: {e}")
                 break
     
     def process_ui_updates(self):
@@ -219,7 +217,7 @@ class VideoManager:
         except queue.Empty:
             pass
         except Exception as e:
-            print(f"UI update processing error: {e}")
+            logger.error(f"UI update processing error: {e}")
 
     def _update_display(self, photo):
         """Update display in main thread."""
@@ -251,14 +249,14 @@ class VideoManager:
                     try:
                         self.frame_callback(frame_gray)
                     except Exception as e:
-                        print(f"Frame callback error: {e}")
+                        logger.error(f"Frame callback error: {e}")
 
             except queue.Empty:
                 if not self._is_playing and not self.pause_event.is_set():
                     self.current_fps = 0
                     break
             except Exception as e:
-                print(f"Processing loop error: {e}")
+                logger.error(f"Processing loop error: {e}")
                 break
 
     def get_time(self):
@@ -277,7 +275,7 @@ class VideoManager:
                 self.container.seek(int(target_ts))
                 self.current_time = target_ts / av.time_base # Update time immediately
             except Exception as e:
-                print(f"Seek error: {e}")
+                logger.error(f"Seek error: {e}")
 
     def get_latency(self):
         """Returns the last measured frame processing latency in seconds."""
@@ -287,45 +285,42 @@ class VideoManager:
         """Returns the current processing framerate."""
         return self.current_fps
 
-    def cleanup(self):
+    def _join_thread(self, thread: Optional[threading.Thread], name: str, timeout: float = 2.0) -> None:
+        """Joins a thread with a timeout and logs a warning on failure."""
+        if thread and thread.is_alive():
+            thread.join(timeout=timeout)
+            if thread.is_alive():
+                logger.warning(f"{name} thread did not terminate cleanly.")
+
+    def cleanup(self) -> None:
         """Stops all threads and releases video resources."""
+        logger.info("Cleaning up video manager...")
         self._is_playing = False
         self.stop_event.set()
         
-        # Force threads to wake up from blocking operations
-        try:
-            self.display_queue.put_nowait(None)  # Sentinel to wake display thread
-        except queue.Full:
-            pass
-        try:
-            self.processing_queue.put_nowait(None)  # Sentinel to wake processing thread
-        except queue.Full:
-            pass
+        # Unblock threads waiting on queues
+        for q in [self.display_queue, self.processing_queue]:
+            try:
+                q.put_nowait(None)
+            except queue.Full:
+                pass
         
-        # Wait for threads to finish with verification
-        threads_to_join = [
-            ('decoder', self.decoder_thread),
-            ('display', self.display_thread), 
-            ('processing', self.processing_thread)
-        ]
-        
-        for thread_name, thread in threads_to_join:
-            if thread and thread.is_alive():
-                thread.join(timeout=2.0)
-                if thread.is_alive():
-                    print(f"Warning: {thread_name} thread did not terminate cleanly")
+        # Wait for threads to finish
+        self._join_thread(self.decoder_thread, "Decoder")
+        self._join_thread(self.display_thread, "Display")
+        self._join_thread(self.processing_thread, "Processing")
         
         # Safely clear queues
-        self._clear_queue_safely(self.display_queue)
-        self._clear_queue_safely(self.processing_queue)
-        self._clear_queue_safely(self.ui_update_queue) 
+        for q in [self.display_queue, self.processing_queue, self.ui_update_queue]:
+            self._clear_queue_safely(q)
 
-        # Close container with error handling
+        # Close PyAV container
         if self.container:
             try:
                 self.container.close()
+                logger.info("Video container closed.")
             except Exception as e:
-                print(f"Error closing video container: {e}")
+                logger.error(f"Error closing video container: {e}", exc_info=True)
             finally:
                 self.container = None
                 self.video_stream = None
@@ -339,7 +334,7 @@ class VideoManager:
                 except queue.Empty:
                     break
         except Exception as e:
-            print(f"Error clearing queue: {e}")
+            logger.error(f"Error clearing queue: {e}")
     
     def __del__(self):
         """Destructor to ensure cleanup."""
