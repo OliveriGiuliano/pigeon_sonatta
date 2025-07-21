@@ -33,7 +33,6 @@ class MainWindow(tk.Tk):
         
         self.audio_generator: Optional[AudioGenerator] = None
         self.audio_enabled = False
-        self.current_soundfont: Optional[str] = None
         
         # Grid settings initialized from config
         self.grid_width = self.ui_config.DEFAULT_GRID_WIDTH
@@ -83,7 +82,6 @@ class MainWindow(tk.Tk):
         output_menu.add_command(label="Record MIDI", command=self._menu_action)
         output_menu.add_separator()
         output_menu.add_checkbutton(label="Enable Audio Playback", variable=self.audio_enabled_var, command=self.toggle_audio)
-        output_menu.add_command(label="Select Soundfont", command=self.select_soundfont)
         output_menu.add_command(label="Audio Device", command=self._menu_action)
         menubar.add_cascade(label="Output", menu=output_menu)
         
@@ -193,9 +191,6 @@ class MainWindow(tk.Tk):
         
         frame = ttk.Frame(group)
         frame.pack(pady=5, fill="x")
-        ttk.Button(frame, text="Select Soundfont", command=self.select_soundfont).pack(side=tk.LEFT, padx=5)
-        self.soundfont_label = ttk.Label(frame, text="No soundfont selected")
-        self.soundfont_label.pack(side=tk.LEFT, padx=5)
 
     def _create_status_bar(self):
         status_bar = ttk.Frame(self, relief=tk.SUNKEN)
@@ -287,7 +282,6 @@ class MainWindow(tk.Tk):
                 grid_width=self.grid_width,
                 grid_height=self.grid_height,
                 note_range=self.note_range,
-                soundfont_path=self.current_soundfont,
                 scale_name=self.current_scale,
                 root_note=self.current_root_note
             )
@@ -426,21 +420,6 @@ class MainWindow(tk.Tk):
             self.audio_status_label.config(text="Audio: Disabled")
             if self.audio_generator:
                 self.audio_generator.stop_all_notes()
-
-    def select_soundfont(self):
-        """Select a soundfont file."""
-        path = filedialog.askopenfilename(
-            title="Select Soundfont File",
-            filetypes=[("Soundfont Files", "*.sf2"), ("All Files", "*")]
-        )
-        if not path:
-            return
-            
-        self.current_soundfont = path
-        self.soundfont_label.config(text=f"SF: {os.path.basename(path)}")
-        
-        if self.audio_generator:
-            self.audio_generator.set_soundfont(path)
 
     def update_grid_settings(self):
         """Update grid and note range settings."""

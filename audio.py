@@ -17,14 +17,13 @@ logger = StructuredLogger.get_logger(__name__)
 
 class AudioGenerator:
     """
-    Generates MIDI instructions from video frames and synthesizes audio using soundfonts.
+    Generates MIDI instructions from video frames and synthesizes audio.
     """
     def __init__(self,
                 config: Optional[AudioConfig] = None,
                 grid_width: int = 4,
                 grid_height: int = 3,
                 note_range: tuple[int, int] = (0, 127),
-                soundfont_path: Optional[str] = None,
                 scale_name: str = "Pentatonic Major",
                 root_note: int = 60):
         """Initialize the audio generator."""
@@ -32,7 +31,6 @@ class AudioGenerator:
         self.grid_width = grid_width
         self.grid_height = grid_height
         self.note_range = note_range
-        self.soundfont_path = soundfont_path
         self.scale_name = scale_name
         self.root_note = root_note
 
@@ -47,7 +45,7 @@ class AudioGenerator:
         self.state_lock = threading.RLock()  # Single lock for all state
         self._current_notes_snapshot: dict[int, int] = {}
         
-        # Initialize pygame mixer for soundfont playback
+        # Initialize pygame mixer for playback
         self._initialize_audio()
     
     def _create_note_map(self):
@@ -99,10 +97,6 @@ class AudioGenerator:
                 return False
                 
             self.midi_out = pygame.midi.Output(midi_device_id)
-            
-            if self.soundfont_path and os.path.exists(self.soundfont_path):
-                logger.info(f"Soundfont path set: {self.soundfont_path}")
-                logger.info("Note: Full soundfont support requires fluidsynth integration.")
             
             self.is_initialized = True
             logger.info("Audio system initialized successfully.")
@@ -225,14 +219,6 @@ class AudioGenerator:
                 except Exception as e:
                     logger.error(f"Error stopping note {note}: {e}")
             self.current_notes.clear()
-    
-    def set_soundfont(self, soundfont_path):
-        """Set a new soundfont file."""
-        self.soundfont_path = soundfont_path
-        if os.path.exists(soundfont_path):
-            logger.info(f"Soundfont set to: {soundfont_path}")
-        else:
-            logger.error(f"Soundfont file not found: {soundfont_path}")
     
     def set_grid_size(self, width, height):
         """Change grid size and recalculate note mapping."""
