@@ -47,7 +47,8 @@ class VideoManager:
         self.pause_event = threading.Event()
 
         # state lock for thread safety
-        self._state_lock = threading.Lock()
+        self._state_lock = threading.RLock()  # Use RLock for re-entrant access
+        self._state_condition = threading.Condition(self._state_lock)
         self._is_playing = False
 
         self.current_fps: float = 0.0
@@ -87,12 +88,14 @@ class VideoManager:
         if not self.container:
             return
 
-        with self._state_lock:
-            if self.pause_event.is_set(): # Resuming from pause
+        with self._state_condition:
+            if self.pause_event.is_set():
                 self.pause_event.clear()
             
             if not self._is_playing:
                 self._is_playing = True
+                self._state_condition.notify_all()  # Wake up waiting threads
+                
                 # Start consumer threads only once
                 if not self.display_thread or not self.display_thread.is_alive():
                     self.display_thread = threading.Thread(target=self._display_loop, daemon=True)
@@ -104,8 +107,9 @@ class VideoManager:
 
     def pause(self):
         """Pauses video playback."""
-        with self._state_lock:
+        with self._state_condition:
             self.pause_event.set()
+            self._state_condition.notify_all()
 
     def is_playing(self):
         """Returns True if the video is currently playing."""
@@ -162,9 +166,9 @@ class VideoManager:
                 logger.error(f"Decoder loop error: {e}")
                 break
         
-        # Safely update playing state
-        with self._state_lock:
+        with self._state_condition:
             self._is_playing = False
+            self._state_condition.notify_all()
 
     def _display_loop(self):
         """Displays frames from NumPy arrays in the display queue."""
@@ -200,10 +204,10 @@ class VideoManager:
                     self.ui_update_queue.put_nowait(photo)
                 except queue.Full:
                     pass  # Drop frame if UI update queue is full
-
             except queue.Empty:
-                if not self._is_playing and not self.pause_event.is_set():
-                    break
+                with self._state_lock:
+                    if not self._is_playing and not self.pause_event.is_set():
+                        break
             except Exception as e:
                 logger.error(f"Display loop error: {e}")
                 break
@@ -295,8 +299,12 @@ class VideoManager:
     def cleanup(self) -> None:
         """Stops all threads and releases video resources."""
         logger.info("Cleaning up video manager...")
-        self._is_playing = False
-        self.stop_event.set()
+        
+        # Atomically stop all operations
+        with self._state_condition:
+            self._is_playing = False
+            self.stop_event.set()
+            self._state_condition.notify_all()
         
         # Unblock threads waiting on queues
         for q in [self.display_queue, self.processing_queue]:

@@ -44,8 +44,7 @@ class AudioGenerator:
         self.is_initialized = False
         self.midi_out = None
         self.current_notes: dict[int, int] = {}  # {note: velocity}
-        self.note_lock = threading.Lock()
-        self.state_lock = threading.Lock()
+        self.state_lock = threading.RLock()  # Single lock for all state
         self._current_notes_snapshot: dict[int, int] = {}
         
         # Initialize pygame mixer for soundfont playback
@@ -149,7 +148,7 @@ class AudioGenerator:
         """Generate MIDI events from brightness values."""
         midi_events = []
         
-        with self.note_lock:
+        with self.state_lock:
             for region_index, brightness in brightness_values.items():
                 if region_index not in self.note_map:
                     continue
@@ -180,7 +179,7 @@ class AudioGenerator:
 
     def get_current_notes_snapshot(self):
         """Get a thread-safe snapshot of current notes for UI display."""
-        with self.note_lock:
+        with self.state_lock:
             return self._current_notes_snapshot.copy()
     
     def play_midi_events(self, midi_events):
@@ -218,7 +217,7 @@ class AudioGenerator:
     
     def stop_all_notes(self):
         """Stop all currently playing notes."""
-        with self.note_lock:
+        with self.state_lock:
             for note in list(self.current_notes.keys()):
                 try:
                     if self.midi_out:
@@ -305,7 +304,16 @@ class AudioGenerator:
         """Clean up audio resources."""
         logger.info("Cleaning up audio system...")
         try:
-            self.stop_all_notes()
+            with self.state_lock:
+                # Stop all notes while holding lock
+                for note in list(self.current_notes.keys()):
+                    try:
+                        if self.midi_out:
+                            self.midi_out.note_off(note, self.current_notes[note])
+                    except Exception as e:
+                        logger.error(f"Error stopping note {note}: {e}")
+                self.current_notes.clear()
+                self._current_notes_snapshot.clear()
             
             if self.midi_out:
                 try:
