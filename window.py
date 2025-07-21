@@ -43,6 +43,7 @@ class MainWindow(tk.Tk):
         self.sensitivity_var = tk.DoubleVar(value=self.sensitivity)
         self.current_scale = self.audio_config.SCALE
         self.current_root_note = self.audio_config.ROOT_NOTE
+        self.current_metric = self.audio_config.DEFAULT_METRIC
 
         # Create UI
         self._create_menu()
@@ -164,7 +165,6 @@ class MainWindow(tk.Tk):
         self._create_video_controls(scrollable_frame)
         self._create_audio_controls(scrollable_frame)
         self._create_grid_settings(scrollable_frame)
-        self._create_status_info(scrollable_frame)
         
         return control_frame
 
@@ -188,6 +188,17 @@ class MainWindow(tk.Tk):
         
         ttk.Checkbutton(group, text="Enable Audio Generation", 
                     variable=self.audio_enabled_var, command=self.toggle_audio).pack(pady=5)
+        
+        # Add metric selection dropdown
+        metric_frame = ttk.Frame(group)
+        metric_frame.pack(pady=5, fill="x")
+        ttk.Label(metric_frame, text="Metric:").pack(side=tk.LEFT)
+        self.metric_var = tk.StringVar(value=self.current_metric)
+        metric_combo = ttk.Combobox(metric_frame, textvariable=self.metric_var, 
+                                values=self.audio_config.AVAILABLE_METRICS, 
+                                state="readonly", width=15)
+        metric_combo.pack(side=tk.LEFT, padx=5)
+        metric_combo.bind("<<ComboboxSelected>>", self.on_metric_change)
         
         # Add sensitivity control
         sens_frame = ttk.Frame(group)
@@ -242,6 +253,16 @@ class MainWindow(tk.Tk):
         root_combo.pack(side=tk.LEFT, padx=5)
         root_combo.bind("<<ComboboxSelected>>", self.on_root_note_change)
 
+    def on_metric_change(self, event=None):
+        """Handle metric selection change."""
+        self.current_metric = self.metric_var.get()
+        
+        # Update audio generator
+        if self.audio_generator:
+            self.audio_generator.set_metric(self.current_metric)
+        
+        logger.info(f"Metric changed to: {self.current_metric}")
+
     def _on_sensitivity_change(self, *args):
         """Handle sensitivity slider change."""
         self.sensitivity = self.sensitivity_var.get()
@@ -258,24 +279,6 @@ class MainWindow(tk.Tk):
         self.status_msg.pack(side=tk.LEFT, padx=5)
         self.stats_lbl = ttk.Label(status_bar, text="FPS: -- | Target FPS: -- | Latency: -- | Target Latency: --")
         self.stats_lbl.pack(side=tk.RIGHT, padx=5)
-
-    def _create_status_info(self, parent: ttk.Frame) -> None:
-        """Creates the status information display panel."""
-        group = ttk.LabelFrame(parent, text="Status")
-        group.pack(pady=10, padx=10, fill="x")
-        
-        self.audio_status_label = ttk.Label(group, text="Audio: Disabled")
-        self.audio_status_label.pack(pady=2, anchor="w", padx=5)
-        
-        self.grid_info_label = ttk.Label(group, text=f"Grid: {self.grid_width}x{self.grid_height}")
-        self.grid_info_label.pack(pady=2, anchor="w", padx=5)
-        
-        self.notes_info_label = ttk.Label(group, text=f"Notes: {self.note_range[0]}-{self.note_range[1]}")
-        self.notes_info_label.pack(pady=2, anchor="w", padx=5)
-
-        root_note_name = self.root_note_var.get() if hasattr(self, 'root_note_var') else 'C'
-        self.scale_info_label = ttk.Label(group, text=f"Scale: {self.current_scale} ({root_note_name})")
-        self.scale_info_label.pack(pady=2, anchor="w", padx=5)
 
     def _create_grid_settings(self, parent: ttk.Frame) -> None:
         """Creates the widgets for configuring the grid, note range, and scale."""
@@ -304,10 +307,8 @@ class MainWindow(tk.Tk):
         """Initialize the audio generator."""
         try:
             self.audio_generator = AudioGenerator()
-            self.audio_status_label.config(text="Audio: Initialized")
         except Exception as e:
             logger.error(f"Audio generator initialization error: {e}")
-            self.audio_status_label.config(text="Audio: Error")
             messagebox.showerror("Audio Error", f"Failed to initialize audio system:\n{e}")
 
     def _on_frame_configure(self, event):
@@ -434,9 +435,7 @@ class MainWindow(tk.Tk):
         if self.audio_enabled:
             if not self.audio_generator:
                 self._init_audio_generator()
-            self.audio_status_label.config(text="Audio: Enabled")
         else:
-            self.audio_status_label.config(text="Audio: Disabled")
             if self.audio_generator:
                 self.audio_generator.stop_all_notes()
 

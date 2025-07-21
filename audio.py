@@ -2,6 +2,8 @@ import cv2
 import pygame
 import pygame.midi
 import threading
+import numpy as np
+
 from scales import generate_scale_notes, get_available_scales
 
 from typing import Optional
@@ -24,6 +26,7 @@ class AudioGenerator:
         self.scale_name = self.config.SCALE
         self.root_note = self.config.ROOT_NOTE
         self.sensitivity = self.config.SENSITIVITY
+        self.metric = self.config.DEFAULT_METRIC
 
         # Calculate total regions and note mapping
         self.total_regions = self.grid_width * self.grid_height
@@ -99,52 +102,94 @@ class AudioGenerator:
     
     def analyze_frame(self, frame):
         """
-        Analyzes a video frame and extracts brightness values for each grid region.
-        This optimized version expects a GRAYSCALE frame.
-
+        Analyzes a video frame and extracts metric values for each grid region.
+        
         Args:
-            frame: OpenCV frame (single-channel grayscale format)
-
+            frame: RGB frame
+            
         Returns:
-            dict: {region_index: brightness_value}
+            dict: {region_index: metric_value}
         """
         if frame is None:
             return {}
-
-        # Resize the entire grayscale frame to the grid dimensions in one go.
-        # cv2.INTER_AREA is efficient for downscaling.
-        resized = cv2.resize(frame, (self.grid_width, self.grid_height), interpolation=cv2.INTER_AREA)
-
-        brightness_values = {}
+        
+        # Handle different metrics
+        if self.metric == "brightness":
+            # Convert to grayscale if needed
+            if len(frame.shape) == 3:
+                gray_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+            else:
+                gray_frame = frame
+            processed_frame = gray_frame
+        elif self.metric in ["red_channel", "green_channel", "blue_channel"]:
+            # Extract specific color channel
+            if len(frame.shape) != 3:
+                return {}  # Need color frame for color channels
+            
+            if self.metric == "red_channel":
+                processed_frame = frame[:, :, 0]  # Red channel
+            elif self.metric == "green_channel":
+                processed_frame = frame[:, :, 1]  # Green channel
+            elif self.metric == "blue_channel":
+                processed_frame = frame[:, :, 2]  # Blue channel
+        elif self.metric == "hue":
+            if len(frame.shape) != 3:
+                return {}
+            hsv_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
+            processed_frame = hsv_frame[:, :, 0]  # Hue channel
+        elif self.metric == "saturation":
+            if len(frame.shape) != 3:
+                return {}
+            hsv_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
+            processed_frame = hsv_frame[:, :, 1]  # Saturation channel
+        else:
+            # Fallback to brightness
+            if len(frame.shape) == 3:
+                processed_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+            else:
+                processed_frame = frame
+        
+        # Resize the processed frame to grid dimensions
+        resized = cv2.resize(processed_frame, (self.grid_width, self.grid_height), 
+                            interpolation=cv2.INTER_AREA)
+        
+        metric_values = {}
         total_regions = self.grid_width * self.grid_height
+        
+        # Normalize values to 0-1 range
+        if self.metric == "hue":
+            # Hue is in range 0-179 in OpenCV HSV
+            metric_array = resized.flatten() / 179.0
+        else:
+            # All other metrics are 0-255
+            metric_array = resized.flatten() / 255.0
+        
+        for i in range(min(total_regions, len(metric_array))):
+            metric_values[i] = metric_array[i]
+        
+        return metric_values
 
-        # Read the brightness values directly from the resized image using numpy operations
-        brightness_array = resized.flatten() / 255.0
-        for i in range(min(total_regions, len(brightness_array))):
-            brightness_values[i] = brightness_array[i]
-
-        return brightness_values
     
-    def brightness_to_velocity(self, brightness):
+    def metric_to_velocity(self, brightness):
         """Convert brightness value (0-1) to MIDI velocity (0-127)."""
         velocity = int(brightness * 127 * (self.sensitivity))
         return max(0, min(127, velocity))
     
-    def generate_midi_events(self, brightness_values: dict[int, float]) -> list[tuple[str, int, int]]:
-        """Generate MIDI events from brightness values."""
+    def generate_midi_events(self, metric_values: dict[int, float]) -> list[tuple[str, int, int]]:
+        """Generate MIDI events from metric values."""
         midi_events = []
         
         with self.state_lock:
-            for region_index, brightness in brightness_values.items():
+            for region_index, metric_value in metric_values.items():
                 if region_index not in self.note_map:
                     continue
                     
                 note = self.note_map[region_index]
-                velocity = self.brightness_to_velocity(brightness)
+                velocity = self.metric_to_velocity(metric_value)
                 
                 is_playing = note in self.current_notes
-                should_play = brightness > self.config.NOTE_ON_THRESHOLD
-                should_stop = brightness <= self.config.NOTE_OFF_THRESHOLD
+                should_play = metric_value > self.config.NOTE_ON_THRESHOLD
+                should_stop = metric_value <= self.config.NOTE_OFF_THRESHOLD
 
                 if should_play and not is_playing:
                     midi_events.append(('note_on', note, velocity))
@@ -192,11 +237,11 @@ class AudioGenerator:
         if not self.is_initialized:
             return
             
-        # Analyze frame
-        brightness_values = self.analyze_frame(frame)
+        # Analyze frame using selected metric
+        metric_values = self.analyze_frame(frame)
         
         # Generate MIDI events
-        midi_events = self.generate_midi_events(brightness_values)
+        midi_events = self.generate_midi_events(metric_values)
         
         # Play MIDI events
         self.play_midi_events(midi_events)
@@ -211,6 +256,16 @@ class AudioGenerator:
                 except Exception as e:
                     logger.error(f"Error stopping note {note}: {e}")
             self.current_notes.clear()
+
+    def set_metric(self, metric: str):
+        """Set the metric used for MIDI generation."""
+        with self.state_lock:
+            if metric in self.config.AVAILABLE_METRICS:
+                self.metric = metric
+                logger.info(f"Metric changed to: {metric}")
+            else:
+                logger.warning(f"Invalid metric: {metric}")
+        self.stop_all_notes()  # Stop current notes as metric changed
     
     def set_grid_size(self, width, height):
         """Change grid size and recalculate note mapping."""

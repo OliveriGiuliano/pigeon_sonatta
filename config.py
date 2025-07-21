@@ -24,6 +24,15 @@ class AudioConfig:
     ROOT_NOTE: int = 60
     DEFAULT_GRID_WIDTH: int = 20
     DEFAULT_GRID_HEIGHT: int = 1
+    DEFAULT_METRIC = "brightness"
+    AVAILABLE_METRICS = [
+        "brightness", 
+        "red_channel", 
+        "green_channel", 
+        "blue_channel", 
+        "hue", 
+        "saturation"
+    ]
 
 class UIConfig(NamedTuple):
     """UI configuration constants."""

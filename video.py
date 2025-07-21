@@ -247,7 +247,7 @@ class VideoManager:
                     self._frame_count_start_time = time.time()
                 
                 # Convert directly to grayscale
-                frame_gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
+                frame_gray = frame_rgb
 
                 if self.frame_callback:
                     try:
