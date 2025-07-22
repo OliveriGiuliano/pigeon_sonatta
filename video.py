@@ -93,6 +93,7 @@ class VideoManager:
             # Platform-specific camera device configuration
             system = platform.system()
             if system == 'Windows':
+                #We're not gettign the camera name automatically rtight now, to get it, run ffmpeg -list_devices true -f dshow -i dummy
                 self.container = av.open(f'video=LUMIX Webcam Software', format='dshow')
             elif system == 'Darwin':
                 self.container = av.open(f'{camera_index}:', format='avfoundation')
