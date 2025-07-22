@@ -6,6 +6,7 @@ import queue
 import time
 import numpy as np
 import cv2
+import platform
 
 from typing import Optional, Callable
 from config import VideoConfig
@@ -78,8 +79,48 @@ class VideoManager:
             self.decoder_thread = threading.Thread(target=self._decoder_loop, daemon=True)
             self.decoder_thread.start()
 
-        except av.AVError as e:
+        except Exception as e:
             logger.error(f"Error opening video file with PyAV: {e}")
+            self.cleanup()
+            raise
+
+    def open_camera(self, camera_index=0):
+        """Opens a camera device for live video capture."""
+        self.cleanup()  # Ensure previous resources are released
+        self.is_camera = True  # New flag to indicate camera input
+
+        try:
+            # Platform-specific camera device configuration
+            system = platform.system()
+            if system == 'Windows':
+                self.container = av.open(f'video=LUMIX Webcam Software', format='dshow')
+            elif system == 'Darwin':
+                self.container = av.open(f'{camera_index}:', format='avfoundation')
+            else:  # Linux
+                self.container = av.open(f'/dev/video{camera_index}', format='v4l2')
+
+            # Get video stream and FPS
+            self.video_stream = self.container.streams.video[0]
+            try:
+                self.fps = float(self.video_stream.average_rate)
+            except:
+                self.fps = 30.0  # Default FPS if unavailable
+
+            # Hardware acceleration setup
+            try:
+                self.video_stream.codec_context.thread_count = 0
+            except Exception as e:
+                logger.warning(f"Could not set thread count: {e}")
+
+            self.stop_event.clear()
+            self.pause_event.clear()
+
+            # Start decoding thread
+            self.decoder_thread = threading.Thread(target=self._decoder_loop, daemon=True)
+            self.decoder_thread.start()
+
+        except Exception as e:
+            logger.error(f"Error opening camera with PyAV: {e}")
             self.cleanup()
             raise
 
@@ -282,6 +323,9 @@ class VideoManager:
 
     def set_position(self, pos):
         """Seeks to a position in the video (fraction 0.0 to 1.0)."""
+        if hasattr(self, 'is_camera') and self.is_camera:
+            logger.warning("Cannot seek in camera stream")
+            return  # Skip seeking for camera input
         if self.container:
             try:
                 target_ts = pos * self.container.duration
@@ -307,6 +351,7 @@ class VideoManager:
 
     def cleanup(self) -> None:
         """Stops all threads and releases video resources."""
+        self.is_camera = False  # Reset camera flag
         logger.info("Cleaning up video manager...")
         
         # Atomically stop all operations

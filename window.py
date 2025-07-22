@@ -38,10 +38,12 @@ class MainWindow(tk.Tk):
         self.track_notebook: Optional[ttk.Notebook] = None
         self.active_track_index: int = -1
         self.next_track_id = 0
-        self.midi_out: Optional[pygame.midi.Output] = None # The new shared MIDI output
+        self.midi_out: Optional[pygame.midi.Output] = None 
         
         self.update_timer = None
         self.grid_overlay_timer = None
+
+        self.current_camera_index = None  # Track active camera
 
         self._initialize_global_audio() # Initialize audio systems once
 
@@ -96,7 +98,7 @@ class MainWindow(tk.Tk):
         # Input menu
         input_menu = tk.Menu(menubar, tearoff=0)
         input_menu.add_command(label="Video File", command=self.open_video)
-        input_menu.add_command(label="Camera", command=self._menu_action)
+        input_menu.add_command(label="Camera", command=self.open_camera)
         input_menu.add_command(label="Input Settings", command=self._menu_action)
         menubar.add_cascade(label="Input", menu=input_menu)
         
@@ -351,6 +353,8 @@ class MainWindow(tk.Tk):
                 
             if not self.video_manager:
                 raise RuntimeError("Video manager not initialized")
+            
+            self.current_camera_index = None  # Clear camera index
 
             # Stop any current video
             self.stop_video()
@@ -390,10 +394,13 @@ class MainWindow(tk.Tk):
             self.after(100, self._process_ui_updates)  # Slower polling when not playing
 
     def reload_video(self):
-        """Reload the current video - useful for debugging."""
+        """Reloads current video or camera source."""
         if self.current_video_path:
-            logger.info(f"Reloading video: {self.current_video_path}")
             self._load_video(self.current_video_path)
+        elif self.current_camera_index is not None:
+            self._load_camera(self.current_camera_index)
+        else:
+            logger.info("No video or camera to reload")
 
     def play_video(self):
         if self.video_manager:
@@ -675,6 +682,43 @@ class MainWindow(tk.Tk):
             logger.warning(f"Invalid track settings input: {e}")
         except Exception as e:
             logger.error(f"Error updating track settings: {e}")
+
+    def open_camera(self):
+        """Opens a camera device for live video input."""
+        camera_index = 0  # Default to first camera
+        self.current_camera_index = camera_index
+        self.current_video_path = None  # Clear video path
+        
+        try:
+            self._load_camera(camera_index)
+        except Exception as e:
+            logger.error(f"Camera error: {e}")
+            self.status_msg.config(text=f"Camera Error: {e}")
+            messagebox.showerror("Camera Error", f"Failed to open camera:\n{e}")
+
+    def _load_camera(self, camera_index):
+        """Loads a camera device with proper error handling."""
+        if not self.video_manager:
+            self._init_video_manager()
+            
+        if not self.video_manager:
+            raise RuntimeError("Video manager not initialized")
+
+        self.stop_video()
+        self.video_manager.open_camera(camera_index)
+        
+        # Start playback after initialization
+        self.after(500, lambda: self._start_camera_playback(camera_index))
+
+    def _start_camera_playback(self, camera_index):
+        try:
+            self.video_manager.play()
+            self.status_msg.config(text=f"Camera {camera_index}")
+            self.after(100, self._update_stats)
+            self.after(50, self._process_ui_updates)
+        except Exception as e:
+            logger.error(f"Camera playback error: {e}")
+            self.status_msg.config(text=f"Playback error: {e}")
 
     def __enter__(self):
         """Context manager entry."""
