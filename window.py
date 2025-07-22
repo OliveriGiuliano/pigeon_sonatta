@@ -3,6 +3,9 @@ from tkinter import ttk, filedialog, messagebox
 import atexit
 import os
 
+import pygame.midi 
+import pygame.mixer 
+
 from video import VideoManager  
 from audio import AudioGenerator 
 
@@ -11,6 +14,7 @@ from scales import get_available_scales, get_note_names
 from typing import Optional
 from config import UIConfig, AudioConfig, VideoConfig
 from logger import StructuredLogger
+from tracks import MidiTrack
 
 logger = StructuredLogger.get_logger(__name__)
 
@@ -28,22 +32,16 @@ class MainWindow(tk.Tk):
 
         self.video_manager: Optional[VideoManager] = None
         self.current_video_path: Optional[str] = None
+
+        self.tracks: list[MidiTrack] = []
+        self.track_notebook: Optional[ttk.Notebook] = None
+        self.active_track_index: int = -1
+        self.next_track_id = 0
+        self.midi_out: Optional[pygame.midi.Output] = None # The new shared MIDI output
         
-        self.audio_generator: Optional[AudioGenerator] = None
-        self.audio_enabled = False
-        
-        # Grid settings initialized from config
-        self.grid_width = self.audio_config.DEFAULT_GRID_WIDTH
-        self.grid_height = self.audio_config.DEFAULT_GRID_HEIGHT
-        self.note_range = self.audio_config.DEFAULT_NOTE_RANGE
-        
-        # Audio Variables
-        self.audio_enabled_var = tk.BooleanVar(value=self.audio_enabled)
-        self.sensitivity = self.audio_config.SENSITIVITY
-        self.sensitivity_var = tk.DoubleVar(value=self.sensitivity)
-        self.current_scale = self.audio_config.SCALE
-        self.current_root_note = self.audio_config.ROOT_NOTE
-        self.current_metric = self.audio_config.DEFAULT_METRIC
+        self.update_timer = None
+
+        self._initialize_global_audio() # Initialize audio systems once
 
         # Create UI
         self._create_menu()
@@ -52,11 +50,35 @@ class MainWindow(tk.Tk):
 
         self._update_grid_overlay()
         
-        # Initialize audio generator
-        self._init_audio_generator()
-        
+        self.add_track() # Add the first initial track
+
         # Register cleanup
         atexit.register(self.cleanup)
+
+    def _initialize_global_audio(self):
+        """Initializes global Pygame systems and the single MIDI output stream."""
+        try:
+            pygame.mixer.pre_init(
+                frequency=self.audio_config.DEFAULT_FREQUENCY,
+                size=-16,
+                channels=2,
+                buffer=self.audio_config.BUFFER_SIZE
+            )
+            pygame.mixer.init()
+            pygame.midi.init()
+            
+            midi_device_id = pygame.midi.get_default_output_id()
+            if midi_device_id == -1:
+                logger.warning("No default MIDI output device found.")
+                messagebox.showwarning("MIDI Error", "No default MIDI output device was found. Audio generation will be disabled.")
+                return
+                
+            self.midi_out = pygame.midi.Output(midi_device_id)
+            logger.info(f"Successfully initialized shared MIDI output on device ID {midi_device_id}.")
+            
+        except Exception as e:
+            logger.error(f"Global audio initialization error: {e}", exc_info=True)
+            messagebox.showerror("Audio Error", f"A critical error occurred initializing the audio system:\n{e}")
 
     def _create_menu(self):
         menubar = tk.Menu(self)
@@ -82,7 +104,6 @@ class MainWindow(tk.Tk):
         output_menu.add_command(label="Save MIDI File", command=self._menu_action)
         output_menu.add_command(label="Record MIDI", command=self._menu_action)
         output_menu.add_separator()
-        output_menu.add_checkbutton(label="Enable Audio Playback", variable=self.audio_enabled_var, command=self.toggle_audio)
         output_menu.add_command(label="Audio Device", command=self._menu_action)
         menubar.add_cascade(label="Output", menu=output_menu)
         
@@ -124,7 +145,6 @@ class MainWindow(tk.Tk):
         # Initialize video after frame is created and mapped
         self.video_frame.bind("<Map>", self._init_video_manager)
 
-    # In window.py, add the following new helper methods to the MainWindow class
     def _create_video_area(self, parent: ttk.Panedwindow) -> ttk.Frame:
         """Creates the frame containing the video panel and grid display."""
         self.video_frame = ttk.Frame(parent, relief=tk.SUNKEN)
@@ -146,27 +166,29 @@ class MainWindow(tk.Tk):
         return self.video_frame
 
     def _create_control_panel(self, parent: ttk.Panedwindow) -> ttk.Frame:
-        """Creates the scrollable control panel on the right."""
-        control_frame = ttk.Frame(parent, relief=tk.RAISED, width=400)
+        """Creates the main control panel area with track management."""
+        control_area_frame = ttk.Frame(parent, relief=tk.RAISED, width=400)
         
-        canvas = tk.Canvas(control_frame)
-        scrollbar = ttk.Scrollbar(control_frame, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
+        # --- Global Video Controls ---
+        self._create_video_controls(control_area_frame)
+        
+        # --- Separator ---
+        ttk.Separator(control_area_frame, orient='horizontal').pack(pady=10, fill='x', padx=10)
+        
+        # --- Track Management Buttons ---
+        track_mgmt_frame = ttk.Frame(control_area_frame)
+        track_mgmt_frame.pack(pady=5, padx=10, fill='x')
+        
+        ttk.Label(track_mgmt_frame, text="MIDI Tracks", font=("Arial", 12, "bold")).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(track_mgmt_frame, text="Add Track", command=self.add_track).pack(side=tk.LEFT, padx=5)
+        ttk.Button(track_mgmt_frame, text="Remove Track", command=self.remove_track).pack(side=tk.LEFT, padx=5)
 
-        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+        # --- Track Notebook ---
+        self.track_notebook = ttk.Notebook(control_area_frame)
+        self.track_notebook.pack(pady=5, padx=10, fill="both", expand=True)
+        self.track_notebook.bind("<<NotebookTabChanged>>", self.on_track_selected)
         
-        ttk.Label(scrollable_frame, text="Control Panel", font=("Arial", 12, "bold")).pack(pady=10)
-        
-        # Create control groups
-        self._create_video_controls(scrollable_frame)
-        self._create_audio_controls(scrollable_frame)
-        self._create_grid_settings(scrollable_frame)
-        
-        return control_frame
+        return control_area_frame
 
     def _create_video_controls(self, parent: ttk.Frame) -> None:
         """Creates the video playback control buttons."""
@@ -180,78 +202,6 @@ class MainWindow(tk.Tk):
         ttk.Button(controls, text="Pause", command=self.pause_video).pack(side=tk.LEFT, padx=5)
         ttk.Button(controls, text="Stop", command=self.stop_video).pack(side=tk.LEFT, padx=5)
         ttk.Button(group, text="Reload Video", command=self.reload_video).pack(pady=5)
-
-    def _create_audio_controls(self, parent: ttk.Frame) -> None:
-        """Creates the audio generation control widgets."""
-        group = ttk.LabelFrame(parent, text="Audio Controls")
-        group.pack(pady=10, padx=10, fill="x")
-        
-        ttk.Checkbutton(group, text="Enable Audio Generation", 
-                    variable=self.audio_enabled_var, command=self.toggle_audio).pack(pady=5)
-        
-        # Add metric selection dropdown
-        metric_frame = ttk.Frame(group)
-        metric_frame.pack(pady=5, fill="x")
-        ttk.Label(metric_frame, text="Metric:").pack(side=tk.LEFT)
-        self.metric_var = tk.StringVar(value=self.current_metric)
-        metric_combo = ttk.Combobox(metric_frame, textvariable=self.metric_var, 
-                                values=self.audio_config.AVAILABLE_METRICS, 
-                                state="readonly", width=15)
-        metric_combo.pack(side=tk.LEFT, padx=5)
-        metric_combo.bind("<<ComboboxSelected>>", self.on_metric_change)
-        
-        # Add sensitivity control
-        sens_frame = ttk.Frame(group)
-        sens_frame.pack(pady=5, fill="x")
-        
-        ttk.Label(sens_frame, text="Sensitivity:").pack(side=tk.LEFT)
-        sensitivity_scale = ttk.Scale(sens_frame, from_=0.0, to=10.0, 
-                                    variable=self.sensitivity_var, 
-                                    orient=tk.HORIZONTAL, length=150)
-        sensitivity_scale.pack(side=tk.LEFT, padx=5, fill="x", expand=True)
-        
-        self.sensitivity_label = ttk.Label(sens_frame, text=f"{self.sensitivity:.1f}")
-        self.sensitivity_label.pack(side=tk.LEFT, padx=5)
-        
-        # Bind sensitivity change
-        self.sensitivity_var.trace_add('write', self._on_sensitivity_change)
-
-        frame = ttk.Frame(group)
-        frame.pack(pady=5, fill="x")
-
-                # --- Note Range ---
-        note_frame = ttk.Frame(group)
-        note_frame.pack(pady=5, fill="x")
-        ttk.Label(note_frame, text="Note Range:").pack(side=tk.LEFT)
-        self.min_note_var = tk.StringVar(value=str(self.note_range[0]))
-        self.max_note_var = tk.StringVar(value=str(self.note_range[1]))
-        
-        ttk.Label(note_frame, text="Min:").pack(side=tk.LEFT, padx=(10, 0))
-        min_spinbox = ttk.Spinbox(note_frame, from_=0, to=127, width=5, textvariable=self.min_note_var)
-        min_spinbox.pack(side=tk.LEFT, padx=5)
-        
-        ttk.Label(note_frame, text="Max:").pack(side=tk.LEFT, padx=(10, 0))
-        max_spinbox = ttk.Spinbox(note_frame, from_=0, to=127, width=5, textvariable=self.max_note_var)
-        max_spinbox.pack(side=tk.LEFT, padx=5)
-        
-        self.min_note_var.trace_add('write', lambda *_: self.update_grid_settings())
-        self.max_note_var.trace_add('write', lambda *_: self.update_grid_settings())
-
-        # --- Scale Settings ---
-        scale_frame = ttk.Frame(group)
-        scale_frame.pack(pady=5, fill="x")
-        ttk.Label(scale_frame, text="Scale:").pack(side=tk.LEFT)
-        self.scale_var = tk.StringVar(value=self.current_scale)
-        scale_combo = ttk.Combobox(scale_frame, textvariable=self.scale_var, values=get_available_scales(), state="readonly", width=15)
-        scale_combo.pack(side=tk.LEFT, padx=5)
-        scale_combo.bind("<<ComboboxSelected>>", self.on_scale_change)
-
-        ttk.Label(scale_frame, text="Root:").pack(side=tk.LEFT, padx=(10, 0))
-        self.root_note_var = tk.StringVar(value="C")
-        note_names = get_note_names()
-        root_combo = ttk.Combobox(scale_frame, textvariable=self.root_note_var, values=note_names, state="readonly", width=5)
-        root_combo.pack(side=tk.LEFT, padx=5)
-        root_combo.bind("<<ComboboxSelected>>", self.on_root_note_change)
 
     def on_metric_change(self, event=None):
         """Handle metric selection change."""
@@ -278,36 +228,70 @@ class MainWindow(tk.Tk):
         self.stats_lbl = ttk.Label(status_bar, text="FPS: -- | Target FPS: -- | Latency: -- | Target Latency: --")
         self.stats_lbl.pack(side=tk.RIGHT, padx=5)
 
-    def _create_grid_settings(self, parent: ttk.Frame) -> None:
-        """Creates the widgets for configuring the grid, note range, and scale."""
+    def _create_audio_controls(self, parent: ttk.Frame, track: MidiTrack) -> None:
+        """Creates the audio generation control widgets for a specific track."""
+        group = ttk.LabelFrame(parent, text="Audio Controls")
+        group.pack(pady=10, padx=10, fill="x")
+        
+        ttk.Checkbutton(group, text="Enable Audio Generation", 
+                    variable=track.audio_enabled_var, command=self.toggle_track_audio).pack(pady=5)
+        
+        metric_frame = ttk.Frame(group)
+        metric_frame.pack(pady=5, fill="x")
+        ttk.Label(metric_frame, text="Metric:").pack(side=tk.LEFT)
+        metric_combo = ttk.Combobox(metric_frame, textvariable=track.metric_var, 
+                                values=self.audio_config.AVAILABLE_METRICS, 
+                                state="readonly", width=15)
+        metric_combo.pack(side=tk.LEFT, padx=5)
+        metric_combo.bind("<<ComboboxSelected>>", self.on_metric_change)
+        
+        sens_frame = ttk.Frame(group)
+        sens_frame.pack(pady=5, fill="x")
+        ttk.Label(sens_frame, text="Sensitivity:").pack(side=tk.LEFT)
+        sensitivity_scale = ttk.Scale(sens_frame, from_=0.0, to=10.0, 
+                                    variable=track.sensitivity_var, 
+                                    orient=tk.HORIZONTAL, length=150)
+        sensitivity_scale.pack(side=tk.LEFT, padx=5, fill="x", expand=True)
+        sensitivity_label = ttk.Label(sens_frame, text=f"{track.sensitivity:.1f}")
+        sensitivity_label.pack(side=tk.LEFT, padx=5)
+        track.sensitivity_var.trace_add('write', lambda *args, label=sensitivity_label: self._on_sensitivity_change(label, *args))
+
+        note_frame = ttk.Frame(group)
+        note_frame.pack(pady=5, fill="x")
+        ttk.Label(note_frame, text="Note Range:").pack(side=tk.LEFT)
+        ttk.Label(note_frame, text="Min:").pack(side=tk.LEFT, padx=(10, 0))
+        ttk.Spinbox(note_frame, from_=0, to=127, width=5, textvariable=track.min_note_var).pack(side=tk.LEFT, padx=5)
+        ttk.Label(note_frame, text="Max:").pack(side=tk.LEFT, padx=(10, 0))
+        ttk.Spinbox(note_frame, from_=0, to=127, width=5, textvariable=track.max_note_var).pack(side=tk.LEFT, padx=5)
+        track.min_note_var.trace_add('write', lambda *_: self._debounced_update_track_settings())
+        track.max_note_var.trace_add('write', lambda *_: self._debounced_update_track_settings())
+
+        scale_frame = ttk.Frame(group)
+        scale_frame.pack(pady=5, fill="x")
+        ttk.Label(scale_frame, text="Scale:").pack(side=tk.LEFT)
+        scale_combo = ttk.Combobox(scale_frame, textvariable=track.scale_var, values=get_available_scales(), state="readonly", width=15)
+        scale_combo.pack(side=tk.LEFT, padx=5)
+        scale_combo.bind("<<ComboboxSelected>>", self.on_scale_change)
+        ttk.Label(scale_frame, text="Root:").pack(side=tk.LEFT, padx=(10, 0))
+        root_combo = ttk.Combobox(scale_frame, textvariable=track.root_note_var, values=get_note_names(), state="readonly", width=5)
+        root_combo.pack(side=tk.LEFT, padx=5)
+        root_combo.bind("<<ComboboxSelected>>", self.on_root_note_change)
+
+    def _create_grid_settings(self, parent: ttk.Frame, track: MidiTrack) -> None:
+        """Creates the widgets for configuring the grid for a specific track."""
         group = ttk.LabelFrame(parent, text="Grid Settings")
         group.pack(pady=10, padx=10, fill="x")
 
-        # --- Grid Size ---
         size_frame = ttk.Frame(group)
         size_frame.pack(pady=5, fill="x")
         ttk.Label(size_frame, text="Grid Size:").pack(side=tk.LEFT)
-        self.grid_width_var = tk.StringVar(value=str(self.grid_width))
-        self.grid_height_var = tk.StringVar(value=str(self.grid_height))
-        
         ttk.Label(size_frame, text="Width:").pack(side=tk.LEFT, padx=(10, 0))
-        width_spinbox = ttk.Spinbox(size_frame, from_=1, to=127, width=5, textvariable=self.grid_width_var)
-        width_spinbox.pack(side=tk.LEFT, padx=5)
-        
+        ttk.Spinbox(size_frame, from_=1, to=127, width=5, textvariable=track.grid_width_var).pack(side=tk.LEFT, padx=5)
         ttk.Label(size_frame, text="Height:").pack(side=tk.LEFT, padx=(10, 0))
-        height_spinbox = ttk.Spinbox(size_frame, from_=1, to=127, width=5, textvariable=self.grid_height_var)
-        height_spinbox.pack(side=tk.LEFT, padx=5)
+        ttk.Spinbox(size_frame, from_=1, to=127, width=5, textvariable=track.grid_height_var).pack(side=tk.LEFT, padx=5)
         
-        self.grid_width_var.trace_add('write', lambda *_: self.update_grid_settings())
-        self.grid_height_var.trace_add('write', lambda *_: self.update_grid_settings())
-
-    def _init_audio_generator(self):
-        """Initialize the audio generator."""
-        try:
-            self.audio_generator = AudioGenerator()
-        except Exception as e:
-            logger.error(f"Audio generator initialization error: {e}")
-            messagebox.showerror("Audio Error", f"Failed to initialize audio system:\n{e}")
+        track.grid_width_var.trace_add('write', lambda *_: self._debounced_update_track_settings())
+        track.grid_height_var.trace_add('write', lambda *_: self._debounced_update_track_settings())
 
     def _on_frame_configure(self, event):
         # Could be used if resizing video window changes viewport
@@ -334,13 +318,14 @@ class MainWindow(tk.Tk):
                 self.status_msg.config(text=f"Video Error: {e}")
 
     def _process_frame(self, frame):
-        """Process video frame for audio generation with error handling."""
-        if not self.audio_enabled or not self.audio_generator or frame is None:
+        """Process video frame for audio generation across all enabled tracks."""
+        if frame is None:
             return
             
         try:
-            # Process frame through audio generator
-            self.audio_generator.process_frame(frame)
+            for track in self.tracks:
+                if track.audio_enabled and track.audio_generator:
+                    track.audio_generator.process_frame(frame)
         except Exception as e:
             logger.error(f"Frame processing error: {e}")
 
@@ -386,7 +371,7 @@ class MainWindow(tk.Tk):
             self.status_msg.config(text=f"Playing: {os.path.basename(path)}")
                 
             self.after(100, self._update_stats)
-            self.after(50, self._process_ui_updates)  # Add this line
+            self.after(50, self._process_ui_updates)
         except Exception as e:
             logger.error(f"Playback error: {e}")
             self.status_msg.config(text=f"Playback error: {e}")
@@ -416,60 +401,17 @@ class MainWindow(tk.Tk):
     def pause_video(self):
         if self.video_manager:
             self.video_manager.pause()
-            if self.audio_generator:
-                self.audio_generator.stop_all_notes()
+            for track in self.tracks:
+                if track.audio_generator:
+                    track.audio_generator.stop_all_notes()
 
     def stop_video(self):
         if self.video_manager:
             self.video_manager.stop()
-            if self.audio_generator:
-                self.audio_generator.stop_all_notes()
+            for track in self.tracks:
+                if track.audio_generator:
+                    track.audio_generator.stop_all_notes()
             self.stats_lbl.config(text="FPS: -- | Target FPS: -- | Latency: -- | Target Latency: --")
-
-    def toggle_audio(self):
-        """Toggle audio generation on/off."""
-        self.audio_enabled = self.audio_enabled_var.get()
-        
-        if self.audio_enabled:
-            if not self.audio_generator:
-                self._init_audio_generator()
-        else:
-            if self.audio_generator:
-                self.audio_generator.stop_all_notes()
-
-    def update_grid_settings(self):
-        """Update grid and note range settings."""
-        try:
-            # Get new values
-            new_width = int(self.grid_width_var.get())
-            new_height = int(self.grid_height_var.get())
-            new_min_note = int(self.min_note_var.get())
-            new_max_note = int(self.max_note_var.get())
-            
-            # Validate values
-            if new_width < 1 or new_width > 127:
-                raise ValueError("Grid width must be between 1 and 127")
-            if new_height < 1 or new_height > 127:
-                raise ValueError("Grid height must be between 1 and 127")
-            if new_min_note < 0 or new_min_note > 127:
-                raise ValueError("Min note must be between 0 and 127")
-            if new_max_note < 0 or new_max_note > 127:
-                raise ValueError("Max note must be between 0 and 127")
-            if new_min_note >= new_max_note:
-                raise ValueError("Min note must be less than max note")
-            
-            # Update values
-            self.grid_width = new_width
-            self.grid_height = new_height
-            self.note_range = (new_min_note, new_max_note)
-            
-            # Update audio generator
-            if self.audio_generator:
-                self.audio_generator.set_grid_size(new_width, new_height)
-                self.audio_generator.set_note_range(new_min_note, new_max_note)
-                        
-        except ValueError as e:
-            messagebox.showerror("Invalid Settings", str(e))
 
     def _update_stats(self):
         if self.video_manager and self.video_manager.is_playing():
@@ -494,26 +436,21 @@ class MainWindow(tk.Tk):
             self.after(500, self._update_stats)
 
     def _update_grid_overlay(self):
-        """Re-draw grid lines and flashing notes on the grid Canvas."""
-        
-        # Reduce update frequency to 20 FPS instead of 30
-        update_interval = int(1000/20)  # 50ms instead of 33ms
-
-        # Clear previous drawings
+        """Re-draw grid lines and flashing notes for the active track."""
+        update_interval = int(1000/20)
         self.grid_canvas.delete("all")
 
         w = self.grid_canvas.winfo_width()
         h = self.grid_canvas.winfo_height()
+        active_track = self.get_active_track()
         
-        # Make sure we have valid dimensions
-        if w <= 1 or h <= 1:
+        if not active_track or w <= 1 or h <= 1:
             self.after(update_interval, self._update_grid_overlay)
             return
         
-        gw, gh = self.grid_width, self.grid_height
+        gw, gh = active_track.grid_width, active_track.grid_height
         cell_w, cell_h = w//gw, h//gh
 
-        # Draw grid lines
         for i in range(1, gw):
             x = i * cell_w
             self.grid_canvas.create_line(x, 0, x, h, fill='white', width=1)
@@ -521,74 +458,213 @@ class MainWindow(tk.Tk):
             y = j * cell_h
             self.grid_canvas.create_line(0, y, w, y, fill='white', width=1)
 
-        # Draw outer border
         self.grid_canvas.create_rectangle(0, 0, w, h, outline='white', width=2, fill='')
 
-        # Only update active notes if audio generator exists - now thread-safe
-        if self.audio_generator:
-            self._draw_active_notes(gw, gh, cell_w, cell_h)
+        if active_track.audio_generator:
+            self._draw_active_notes(active_track.audio_generator, gw, gh, cell_w, cell_h)
 
-        # Schedule next update with reduced frequency
         self.after(update_interval, self._update_grid_overlay)
 
-    def _draw_active_notes(self, gw, gh, cell_w, cell_h):
-        """Draw active notes separately to optimize performance."""
-        # Get thread-safe snapshot of current notes
-        if not self.audio_generator:
+    def _draw_active_notes(self, audio_generator: AudioGenerator, gw, gh, cell_w, cell_h):
+        """Draw active notes for a specific audio generator."""
+        if not audio_generator:
             return
             
-        current_notes_snapshot = self.audio_generator.get_current_notes_snapshot()
+        current_notes_snapshot = audio_generator.get_current_notes_snapshot()
         note_map_copy = {}
         
-        # Get thread-safe copy of note map
-        with self.audio_generator.state_lock:
-            note_map_copy = self.audio_generator.note_map.copy()
+        with audio_generator.state_lock:
+            note_map_copy = audio_generator.note_map.copy()
         
         for region_index, note in note_map_copy.items():
             if note in current_notes_snapshot:
-                # Get the velocity for this note
                 velocity = current_notes_snapshot[note]
-                
-                # Simplified color calculation
-                intensity = 255 - min(255, velocity * 2)  # Scale 0-127 to 0-254, cap at 255
+                intensity = 255 - min(255, velocity * 2)
                 color = f"#{255:02x}{intensity:02x}{255:02x}"
                 
-                # Compute row/col
-                row = region_index // gw
-                col = region_index % gw
+                row, col = divmod(region_index, gw)
                 x1, y1 = col * cell_w, row * cell_h
                 x2, y2 = x1 + cell_w, y1 + cell_h
                 
-                # Draw colored rectangle
-                self.grid_canvas.create_rectangle(
-                    x1 + 1, y1 + 1, x2 - 1, y2 - 1,
-                    fill=color, outline='', width=0  # No outline for performance
-                )
+                self.grid_canvas.create_rectangle(x1 + 1, y1 + 1, x2 - 1, y2 - 1, fill=color, outline='', width=0)
                 
-                # Draw note label
-                x = col * cell_w + cell_w // 2
-                y = row * cell_h + cell_h // 2
-                self.grid_canvas.create_text(x, y, text=f"N{note}", 
-                                        fill='white', font=('Arial', 8))  # Smaller font
+                x_text, y_text = x1 + cell_w // 2, y1 + cell_h // 2
+                self.grid_canvas.create_text(x_text, y_text, text=f"N{note}", fill='white', font=('Arial', 8))
+
+    def _create_track_tab(self, track: MidiTrack) -> ttk.Frame:
+        """Creates a new tab for a given track with all its controls."""
+        tab_frame = ttk.Frame(self.track_notebook)
+        
+        canvas = tk.Canvas(tab_frame)
+        scrollbar = ttk.Scrollbar(tab_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+
+        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        # Create control groups for this specific track
+        self._create_audio_controls(scrollable_frame, track)
+        self._create_grid_settings(scrollable_frame, track)
+        
+        return tab_frame
+
+    def add_track(self):
+        """Adds a new MIDI track and its corresponding UI tab."""
+        # Ensure we have a valid MIDI output before adding a track
+        if self.midi_out is None:
+            messagebox.showerror("MIDI Error", "Cannot add a track because the MIDI output is not available.")
+            return
+            
+        track_id = self.next_track_id
+        # Pass the shared midi_out object to the new track
+        new_track = MidiTrack(track_id=track_id, midi_out=self.midi_out)
+        self.tracks.append(new_track)
+        self.next_track_id += 1
+        
+        tab_frame = self._create_track_tab(new_track)
+        self.track_notebook.add(tab_frame, text=f"Track {track_id + 1}")
+        
+        self.track_notebook.select(len(self.tracks) - 1)
+        
+        logger.info(f"Added Track {track_id + 1}")
+
+    def remove_track(self):
+        """Removes the currently selected MIDI track."""
+        if len(self.tracks) <= 1:
+            messagebox.showwarning("Remove Track", "Cannot remove the last track.")
+            return
+
+        selected_index = self.track_notebook.index(self.track_notebook.select())
+        track_to_remove = self.tracks[selected_index]
+        logger.info(f"Removing Track {track_to_remove.track_id + 1}")
+        
+        track_to_remove.cleanup()
+        self.tracks.pop(selected_index)
+        self.track_notebook.forget(selected_index)
+        
+        self.after(50, self._update_grid_overlay)
+
+    def on_track_selected(self, event=None):
+        """Handles switching between track tabs."""
+        if not self.track_notebook or not self.tracks:
+            return
+            
+        try:
+            new_index = self.track_notebook.index(self.track_notebook.select())
+            if new_index != self.active_track_index:
+                self.active_track_index = new_index
+                logger.info(f"Switched to Track {self.get_active_track().track_id + 1}")
+                self._update_grid_overlay()
+        except (tk.TclError, IndexError):
+            self.active_track_index = -1
+
+    def get_active_track(self) -> Optional[MidiTrack]:
+        """Returns the currently active track, or None."""
+        if self.active_track_index != -1 and self.active_track_index < len(self.tracks):
+            return self.tracks[self.active_track_index]
+        return None
+
+    def toggle_track_audio(self, event=None):
+        """Toggles audio generation for the active track."""
+        track = self.get_active_track()
+        if not track: return
+        
+        track.audio_enabled = track.audio_enabled_var.get()
+        
+        if not track.audio_enabled and track.audio_generator:
+            track.audio_generator.stop_all_notes()
+        logger.info(f"Track {track.track_id + 1} audio " + ("enabled" if track.audio_enabled else "disabled"))
+
+    def on_metric_change(self, event=None):
+        """Handle metric selection change for the active track."""
+        track = self.get_active_track()
+        if not track: return
+        
+        new_metric = track.metric_var.get()
+        if new_metric != track.current_metric:
+            track.current_metric = new_metric
+            if track.audio_generator:
+                track.audio_generator.set_metric(track.current_metric)
+            logger.info(f"Track {track.track_id + 1} metric set to {new_metric}")
+
+    def _on_sensitivity_change(self, label_widget, *args):
+        """Handle sensitivity slider change for the active track."""
+        track = self.get_active_track()
+        if not track: return
+        
+        new_sensitivity = track.sensitivity_var.get()
+        label_widget.config(text=f"{new_sensitivity:.1f}")
+        
+        if new_sensitivity != track.sensitivity:
+            track.sensitivity = new_sensitivity
+            if track.audio_generator:
+                track.audio_generator.set_sensitivity(track.sensitivity)
 
     def on_scale_change(self, event=None):
-        """Handle scale selection change."""
-        self.current_scale = self.scale_var.get()
-        self.update_scale_settings()
+        self.update_track_settings()
 
     def on_root_note_change(self, event=None):
-        """Handle root note selection change."""
-        note_name = self.root_note_var.get()
-        note_names = get_note_names()
-        if note_name in note_names:
-            # Convert note name to MIDI note number (C4 = 60)
-            self.current_root_note = 60 + note_names.index(note_name)
-        self.update_scale_settings()
+        self.update_track_settings()
 
-    def update_scale_settings(self):
-        """Update scale settings in audio generator."""
-        if self.audio_generator:
-            self.audio_generator.set_scale(self.current_scale, self.current_root_note)
+    def _debounced_update_track_settings(self):
+        """Debounced version of update_track_settings to prevent UI freezing from rapid changes."""
+        if self.update_timer:
+            self.after_cancel(self.update_timer)
+        self.update_timer = self.after(150, self.update_track_settings)  # 150ms delay
+
+    def update_track_settings(self):
+        """Update all settings for the active track from its UI widgets."""
+        self.update_timer = None  # Clear the timer reference
+        track = self.get_active_track()
+        if not track: return
+
+        try:
+            # Get values with bounds checking
+            new_width = max(1, min(127, int(track.grid_width_var.get())))
+            new_height = max(1, min(127, int(track.grid_height_var.get())))
+            new_min_note = max(0, min(127, int(track.min_note_var.get())))
+            new_max_note = max(0, min(127, int(track.max_note_var.get())))
+            
+            # Ensure min < max
+            if new_min_note >= new_max_note:
+                new_max_note = min(127, new_min_note + 1)
+                track.max_note_var.set(new_max_note)
+            
+            new_scale = track.scale_var.get()
+            new_root_note_name = track.root_note_var.get()
+
+            # Only update if values actually changed
+            settings_changed = (
+                track.grid_width != new_width or
+                track.grid_height != new_height or
+                track.note_range != (new_min_note, new_max_note) or
+                track.current_scale != new_scale
+            )
+            
+            if not settings_changed:
+                return
+            
+            track.grid_width = new_width
+            track.grid_height = new_height
+            track.note_range = (new_min_note, new_max_note)
+            track.current_scale = new_scale
+            
+            note_names = get_note_names()
+            if new_root_note_name in note_names:
+                track.current_root_note = 60 + note_names.index(new_root_note_name)
+
+            if track.audio_generator:
+                track.update_audio_generator_settings()
+            
+            self._update_grid_overlay()
+            
+        except (ValueError, tk.TclError) as e:
+            logger.warning(f"Invalid track settings input: {e}")
+        except Exception as e:
+            logger.error(f"Error updating track settings: {e}")
 
     def __enter__(self):
         """Context manager entry."""
@@ -601,34 +677,38 @@ class MainWindow(tk.Tk):
 
     def cleanup(self):
         """Clean up resources with proper error handling."""
+        if self.update_timer:
+            self.after_cancel(self.update_timer)
+            self.update_timer = None
+        
+        logger.info("Cleaning up all tracks and resources...")
         cleanup_errors = []
         
-        try:
-            # Clean up audio generator
-            if self.audio_generator:
-                try:
-                    self.audio_generator.cleanup()
-                except Exception as e:
-                    cleanup_errors.append(f"Audio cleanup error: {e}")
-                finally:
-                    self.audio_generator = None
-                    
-            # Clean up video manager
-            if self.video_manager:
-                try:
-                    self.video_manager.cleanup()
-                except Exception as e:
-                    cleanup_errors.append(f"Video cleanup error: {e}")
-                finally:
-                    self.video_manager = None
-                    
-            if cleanup_errors:
-                logger.error(f"Cleanup completed with errors: {'; '.join(cleanup_errors)}")
-            else:
-                logger.info("Cleanup completed successfully")
+        for track in self.tracks:
+            try:
+                track.cleanup()
+            except Exception as e:
+                cleanup_errors.append(f"Track {track.track_id} cleanup error: {e}")
+        self.tracks.clear()
                 
-        except Exception as e:
-            logger.error(f"Critical cleanup error: {e}")
+        if self.video_manager:
+            try:
+                self.video_manager.cleanup()
+            except Exception as e:
+                cleanup_errors.append(f"Video cleanup error: {e}")
+            finally:
+                self.video_manager = None
+                
+        # After all individual components are cleaned, shut down global systems.
+        if pygame.midi.get_init():
+            pygame.midi.quit()
+        if pygame.mixer.get_init():
+            pygame.mixer.quit()
+
+        if cleanup_errors:
+            logger.error(f"Cleanup completed with errors: {'; '.join(cleanup_errors)}")
+        else:
+            logger.info("Cleanup completed successfully")
 
     def on_closing(self):
         logger.info("Closing application...")

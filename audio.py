@@ -19,7 +19,7 @@ class AudioGenerator:
     """
     Generates MIDI instructions from video frames and synthesizes audio.
     """
-    def __init__(self, config: Optional[AudioConfig] = None):
+    def __init__(self, midi_out: pygame.midi.Output, config: Optional[AudioConfig] = None):
         """Initialize the audio generator."""
         self.config = config or AudioConfig()
         self.grid_width = self.config.DEFAULT_GRID_WIDTH
@@ -30,19 +30,20 @@ class AudioGenerator:
         self.sensitivity = self.config.SENSITIVITY
         self.metric = self.config.DEFAULT_METRIC
 
-        # Calculate total regions and note mapping
         self.total_regions = self.grid_width * self.grid_height
         self.note_map = self._create_note_map()
         
-        # Audio state
         self.is_initialized = False
-        self.midi_out = None
-        self.current_notes: dict[int, int] = {}  # {note: velocity}
-        self.state_lock = threading.RLock()  # Single lock for all state
+        self.midi_out = midi_out # Use the passed-in shared MIDI output
+        self.current_notes: dict[int, int] = {}
+        self.state_lock = threading.RLock()
         self._current_notes_snapshot: dict[int, int] = {}
         
-        # Initialize pygame mixer for playback
-        self._initialize_audio()
+        if self.midi_out is not None:
+            self.is_initialized = True
+            logger.info("AudioGenerator successfully linked to shared MIDI output.")
+        else:
+            logger.error("AudioGenerator received an invalid MIDI output object.")
     
     def _create_note_map(self):
         """Create mapping from grid regions to scale notes."""
@@ -74,33 +75,6 @@ class AudioGenerator:
     def get_available_scales(self):
         """Return list of available scales."""
         return get_available_scales()
-    
-    def _initialize_audio(self) -> bool:
-        """Initialize pygame mixer and MIDI output."""
-        try:
-            pygame.mixer.pre_init(
-                frequency=self.config.DEFAULT_FREQUENCY,
-                size=-16,
-                channels=2,
-                buffer=self.config.BUFFER_SIZE
-            )
-            pygame.mixer.init()
-            pygame.midi.init()
-            
-            midi_device_id = pygame.midi.get_default_output_id()
-            if midi_device_id == -1:
-                logger.warning("No MIDI output device found.")
-                return False
-                
-            self.midi_out = pygame.midi.Output(midi_device_id)
-            
-            self.is_initialized = True
-            logger.info("Audio system initialized successfully.")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Audio initialization error: {e}", exc_info=True)
-            return False
     
     def analyze_frame(self, frame):
         """
@@ -371,7 +345,6 @@ class AudioGenerator:
         logger.info("Cleaning up audio system...")
         try:
             with self.state_lock:
-                # Stop all notes while holding lock
                 for note in list(self.current_notes.keys()):
                     try:
                         if self.midi_out:
@@ -391,10 +364,11 @@ class AudioGenerator:
                 finally:
                     self.midi_out = None
             
-            if pygame.midi.get_init():
-                pygame.midi.quit()
-            if pygame.mixer.get_init():
-                pygame.mixer.quit()
+            # --- REMOVE THE FOLLOWING LINES ---
+            # if pygame.midi.get_init():
+            #     pygame.midi.quit()
+            # if pygame.mixer.get_init():
+            #     pygame.mixer.quit()
                     
             self.is_initialized = False
             logger.info("Audio system cleaned up successfully.")

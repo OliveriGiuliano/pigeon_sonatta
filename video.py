@@ -150,8 +150,17 @@ class VideoManager:
                     try:
                         self.processing_queue.put_nowait(frame_np)
                     except queue.Full:
-                        # Drop frames if processing can't keep up
-                        pass
+                        # Processing queue is full. Drop the oldest frame to make space for the newest one.
+                        logger.warning("Processing queue full; dropping oldest frame to prioritize recent data.")
+                        try:
+                            # Remove the oldest frame.
+                            self.processing_queue.get_nowait()
+                            # Add the new frame.
+                            self.processing_queue.put_nowait(frame_np)
+                        except (queue.Empty, queue.Full):
+                            # This is a defensive catch for rare race conditions.
+                            # If it occurs, this new frame is simply dropped.
+                            pass
 
                 # More precise timing
                 next_frame_time += frame_delay
