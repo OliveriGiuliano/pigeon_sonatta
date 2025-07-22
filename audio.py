@@ -341,38 +341,22 @@ class AudioGenerator:
             self.sensitivity = max(0.0, min(10.0, sensitivity))
     
     def cleanup(self) -> None:
-        """Clean up audio resources."""
+        """Clean up audio resources (stop notes but keep shared MIDI output open)."""
         logger.info("Cleaning up audio system...")
         try:
             with self.state_lock:
-                for note in list(self.current_notes.keys()):
+                # Stop any playing notes
+                for note, vel in list(self.current_notes.items()):
                     try:
                         if self.midi_out:
-                            self.midi_out.note_off(note, self.current_notes[note])
+                            self.midi_out.note_off(note, vel)
                     except Exception as e:
                         logger.error(f"Error stopping note {note}: {e}")
                 self.current_notes.clear()
                 self._current_notes_snapshot.clear()
-            
-            if self.midi_out:
-                try:
-                    for channel in range(16):
-                        self.midi_out.write_short(0xB0 | channel, 123, 0)
-                    self.midi_out.close()
-                except Exception as e:
-                    logger.error(f"Error closing MIDI output: {e}", exc_info=True)
-                finally:
-                    self.midi_out = None
-            
-            # --- REMOVE THE FOLLOWING LINES ---
-            # if pygame.midi.get_init():
-            #     pygame.midi.quit()
-            # if pygame.mixer.get_init():
-            #     pygame.mixer.quit()
-                    
+            # Do not close or quit shared MIDI output here; it's managed globally
             self.is_initialized = False
-            logger.info("Audio system cleaned up successfully.")
-            
+            logger.info("Audio system cleaned up (notes stopped).")
         except Exception as e:
             logger.error(f"An error occurred during audio cleanup: {e}", exc_info=True)
     

@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import atexit
 import os
+import time
 
 import pygame.midi 
 import pygame.mixer 
@@ -40,6 +41,7 @@ class MainWindow(tk.Tk):
         self.midi_out: Optional[pygame.midi.Output] = None # The new shared MIDI output
         
         self.update_timer = None
+        self.grid_overlay_timer = None
 
         self._initialize_global_audio() # Initialize audio systems once
 
@@ -437,7 +439,13 @@ class MainWindow(tk.Tk):
 
     def _update_grid_overlay(self):
         """Re-draw grid lines and flashing notes for the active track."""
-        update_interval = int(1000/20)
+        if self.grid_overlay_timer:
+            self.after_cancel(self.grid_overlay_timer)
+            self.grid_overlay_timer = None
+     
+        start_time = time.time()
+        update_interval = 50  # ms
+        
         self.grid_canvas.delete("all")
 
         w = self.grid_canvas.winfo_width()
@@ -463,7 +471,7 @@ class MainWindow(tk.Tk):
         if active_track.audio_generator:
             self._draw_active_notes(active_track.audio_generator, gw, gh, cell_w, cell_h)
 
-        self.after(update_interval, self._update_grid_overlay)
+        self.grid_overlay_timer = self.after(update_interval, self._update_grid_overlay)
 
     def _draw_active_notes(self, audio_generator: AudioGenerator, gw, gh, cell_w, cell_h):
         """Draw active notes for a specific audio generator."""
@@ -545,7 +553,9 @@ class MainWindow(tk.Tk):
         self.tracks.pop(selected_index)
         self.track_notebook.forget(selected_index)
         
-        self.after(50, self._update_grid_overlay)
+        if self.grid_overlay_timer:
+            self.after_cancel(self.grid_overlay_timer)
+        self.grid_overlay_timer = self.after(50, self._update_grid_overlay)
 
     def on_track_selected(self, event=None):
         """Handles switching between track tabs."""
@@ -556,8 +566,9 @@ class MainWindow(tk.Tk):
             new_index = self.track_notebook.index(self.track_notebook.select())
             if new_index != self.active_track_index:
                 self.active_track_index = new_index
-                logger.info(f"Switched to Track {self.get_active_track().track_id + 1}")
-                self._update_grid_overlay()
+                if self.grid_overlay_timer:
+                    self.after_cancel(self.grid_overlay_timer)
+                self.grid_overlay_timer = self.after(0, self._update_grid_overlay)
         except (tk.TclError, IndexError):
             self.active_track_index = -1
 
@@ -576,7 +587,6 @@ class MainWindow(tk.Tk):
         
         if not track.audio_enabled and track.audio_generator:
             track.audio_generator.stop_all_notes()
-        logger.info(f"Track {track.track_id + 1} audio " + ("enabled" if track.audio_enabled else "disabled"))
 
     def on_metric_change(self, event=None):
         """Handle metric selection change for the active track."""
