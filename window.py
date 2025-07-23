@@ -43,7 +43,8 @@ class MainWindow(tk.Tk):
         self.update_timer = None
         self.grid_overlay_timer = None
 
-        self.current_camera_index = None  # Track active camera
+        self.current_camera_index = None  # Track active camer
+        self.selected_midi_device_id = None
 
         self._initialize_global_audio() # Initialize audio systems once
 
@@ -62,6 +63,13 @@ class MainWindow(tk.Tk):
     def _initialize_global_audio(self):
         """Initializes global Pygame systems and the single MIDI output stream."""
         try:
+            # Shutdown existing MIDI to allow re-initialization
+            if self.midi_out:
+                self.midi_out.close()
+                self.midi_out = None
+            if pygame.midi.get_init():
+                pygame.midi.quit()
+
             pygame.mixer.pre_init(
                 frequency=self.audio_config.DEFAULT_FREQUENCY,
                 size=-16,
@@ -70,15 +78,18 @@ class MainWindow(tk.Tk):
             )
             pygame.mixer.init()
             pygame.midi.init()
-            
-            midi_device_id = pygame.midi.get_default_output_id()
+
+            if not self.selected_midi_device_id:
+                self.selected_midi_device_id = tk.IntVar(value=pygame.midi.get_default_output_id())
+            midi_device_id = self.selected_midi_device_id.get() 
             if midi_device_id == -1:
                 logger.warning("No default MIDI output device found.")
                 messagebox.showwarning("MIDI Error", "No default MIDI output device was found. Audio generation will be disabled.")
                 return
                 
             self.midi_out = pygame.midi.Output(midi_device_id)
-            logger.info(f"Successfully initialized shared MIDI output on device ID {midi_device_id}.")
+            device_info = pygame.midi.get_device_info(midi_device_id)
+            logger.info(f"Successfully initialized shared MIDI output on device: {device_info[1].decode()}") 
             
         except Exception as e:
             logger.error(f"Global audio initialization error: {e}", exc_info=True)
@@ -104,7 +115,10 @@ class MainWindow(tk.Tk):
         
         # Output menu
         output_menu = tk.Menu(menubar, tearoff=0)
-        output_menu.add_command(label="Virtual MIDI Port", command=self._menu_action)
+        self.midi_device_menu = tk.Menu(output_menu, tearoff=0)
+        output_menu.add_cascade(label="Virtual MIDI Port", menu=self.midi_device_menu)
+        # Populate the menu
+        self._populate_midi_devices()
         output_menu.add_command(label="Save MIDI File", command=self._menu_action)
         output_menu.add_command(label="Record MIDI", command=self._menu_action)
         output_menu.add_separator()
@@ -719,6 +733,48 @@ class MainWindow(tk.Tk):
         except Exception as e:
             logger.error(f"Camera playback error: {e}")
             self.status_msg.config(text=f"Playback error: {e}")
+
+
+    def _populate_midi_devices(self):
+        """Populates the MIDI output device menu."""
+        self.midi_device_menu.delete(0, tk.END) # Clear existing entries
+        
+        if not pygame.midi.get_init():
+            pygame.midi.init()
+
+        for i in range(pygame.midi.get_count()):
+            device_info = pygame.midi.get_device_info(i)
+            if device_info[3] == 1:  # Check if it's an output device
+                device_name = f"{i}: {device_info[1].decode()}"
+                self.midi_device_menu.add_radiobutton(
+                    label=device_name,
+                    variable=self.selected_midi_device_id,
+                    value=i,
+                    command=self._on_midi_device_change
+                )
+
+    def _on_midi_device_change(self):
+        """Handles MIDI output device change and re-initializes audio."""
+        selected_id = self.selected_midi_device_id.get()
+        logger.info(f"User selected new MIDI device ID: {selected_id}. Re-initializing audio.")
+
+        # Stop all notes on all tracks before switching
+        for track in self.tracks:
+            if track.audio_generator:
+                track.audio_generator.stop_all_notes()
+        
+        # Re-initialize the global audio system with the new device
+        self._initialize_global_audio()
+        
+        # Re-link all existing tracks to the new midi_out object
+        for track in self.tracks:
+            track.midi_out = self.midi_out
+            if track.audio_generator:
+                track.audio_generator.midi_out = self.midi_out
+                track.audio_generator.is_initialized = self.midi_out is not None
+
+        messagebox.showinfo("MIDI Device Changed", f"MIDI output has been switched.")
+
 
     def __enter__(self):
         """Context manager entry."""
