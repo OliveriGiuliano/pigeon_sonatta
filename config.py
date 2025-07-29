@@ -13,8 +13,8 @@ class AudioConfig:
     DEFAULT_FREQUENCY: int = 44100
     BUFFER_SIZE: int = 512
     # MIDI processing thresholds
-    NOTE_ON_THRESHOLD: float = 0.1  # Brightness threshold to trigger a note (0-1)
-    NOTE_OFF_THRESHOLD: float = 0.05 # Brightness threshold to release a note (0-1)
+    NOTE_ON_THRESHOLD: float = 0.1  # Metric threshold to trigger a note (0-1)
+    NOTE_OFF_THRESHOLD: float = 0.05 # metric threshold to release a note (0-1)
     VELOCITY_CHANGE_THRESHOLD: int = 10 # Min change in velocity (0-127) to re-trigger a note
     # MIDI value ranges
     MIDI_NOTE_RANGE: tuple[int, int] = (0, 127) # Midi standard

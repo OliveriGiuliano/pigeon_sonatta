@@ -30,7 +30,8 @@ class MidiTrack:
         self.current_metric = self.audio_config.DEFAULT_METRIC
         self.audio_enabled = False
         self.invert_metric = False
-
+        self.note_on_threshold = self.audio_config.NOTE_ON_THRESHOLD
+        self.note_off_threshold = self.audio_config.NOTE_OFF_THRESHOLD
 
         # Tkinter variables for data binding
         self.grid_width_var = tk.StringVar(value=str(self.grid_width))
@@ -43,6 +44,8 @@ class MidiTrack:
         self.metric_var = tk.StringVar(value=self.current_metric)
         self.audio_enabled_var = tk.BooleanVar(value=self.audio_enabled)
         self.invert_metric_var = tk.BooleanVar(value=False)
+        self.note_on_threshold_var = tk.DoubleVar(value=self.audio_config.NOTE_ON_THRESHOLD)
+        self.note_off_threshold_var = tk.DoubleVar(value=self.audio_config.NOTE_OFF_THRESHOLD)
         
         self.audio_generator: Optional[AudioGenerator] = None
         self._init_audio_generator()
@@ -67,6 +70,8 @@ class MidiTrack:
         self.audio_generator.set_metric(self.current_metric)
         self.audio_generator.set_sensitivity(self.sensitivity)
         self.audio_generator.set_invert_metric(self.invert_metric)
+        self.audio_generator.config.NOTE_ON_THRESHOLD = self.note_on_threshold
+        self.audio_generator.config.NOTE_OFF_THRESHOLD = self.note_off_threshold
 
     def cleanup(self):
         """Cleans up resources for this track."""

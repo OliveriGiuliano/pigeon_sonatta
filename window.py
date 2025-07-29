@@ -278,6 +278,31 @@ class MainWindow(tk.Tk):
                         variable=track.invert_metric_var, 
                         command=self.toggle_invert_metric).pack(pady=5)
 
+        threshold_frame = ttk.LabelFrame(group, text="Activation Thresholds")
+        threshold_frame.pack(pady=5, fill="x")
+
+        on_thresh_frame = ttk.Frame(threshold_frame)
+        on_thresh_frame.pack(pady=2, fill="x")
+        ttk.Label(on_thresh_frame, text="Note On:").pack(side=tk.LEFT)
+        on_threshold_scale = ttk.Scale(on_thresh_frame, from_=0.0, to=1.0, 
+                                    variable=track.note_on_threshold_var, 
+                                    orient=tk.HORIZONTAL, length=120)
+        on_threshold_scale.pack(side=tk.LEFT, padx=5, fill="x", expand=True)
+        on_threshold_label = ttk.Label(on_thresh_frame, text=f"{track.note_on_threshold:.2f}")
+        on_threshold_label.pack(side=tk.LEFT, padx=5)
+        track.note_on_threshold_var.trace_add('write', lambda *args, label=on_threshold_label: self._on_threshold_change('on', label, *args))
+
+        off_thresh_frame = ttk.Frame(threshold_frame)
+        off_thresh_frame.pack(pady=2, fill="x")
+        ttk.Label(off_thresh_frame, text="Note Off:").pack(side=tk.LEFT)
+        off_threshold_scale = ttk.Scale(off_thresh_frame, from_=0.0, to=1.0, 
+                                    variable=track.note_off_threshold_var, 
+                                    orient=tk.HORIZONTAL, length=120)
+        off_threshold_scale.pack(side=tk.LEFT, padx=5, fill="x", expand=True)
+        off_threshold_label = ttk.Label(off_thresh_frame, text=f"{track.note_off_threshold:.2f}")
+        off_threshold_label.pack(side=tk.LEFT, padx=5)
+        track.note_off_threshold_var.trace_add('write', lambda *args, label=off_threshold_label: self._on_threshold_change('off', label, *args))
+
         note_frame = ttk.Frame(group)
         note_frame.pack(pady=5, fill="x")
         ttk.Label(note_frame, text="Note Range:").pack(side=tk.LEFT)
@@ -788,6 +813,28 @@ class MainWindow(tk.Tk):
 
         messagebox.showinfo("MIDI Device Changed", f"MIDI output has been switched.")
 
+    def _on_threshold_change(self, threshold_type, label_widget, *args):
+        """Handle threshold slider changes for the active track."""
+        track = self.get_active_track()
+        if not track: 
+            return
+        
+        if threshold_type == 'on':
+            new_threshold = track.note_on_threshold_var.get()
+            label_widget.config(text=f"{new_threshold:.2f}")
+            
+            if new_threshold != track.note_on_threshold:
+                track.note_on_threshold = new_threshold
+                if track.audio_generator:
+                    track.audio_generator.config.NOTE_ON_THRESHOLD = new_threshold
+        else:  # threshold_type == 'off'
+            new_threshold = track.note_off_threshold_var.get()
+            label_widget.config(text=f"{new_threshold:.2f}")
+            
+            if new_threshold != track.note_off_threshold:
+                track.note_off_threshold = new_threshold
+                if track.audio_generator:
+                    track.audio_generator.config.NOTE_OFF_THRESHOLD = new_threshold
 
     def __enter__(self):
         """Context manager entry."""
