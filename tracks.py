@@ -47,8 +47,8 @@ class MidiTrack:
     def _init_audio_generator(self):
         """Initializes the audio generator for this track."""
         try:
-            # Pass the shared midi_out object to the generator
-            self.audio_generator = AudioGenerator(midi_out=self.midi_out)
+            # Pass the shared midi_out object and track_id as channel to the generator
+            self.audio_generator = AudioGenerator(midi_out=self.midi_out, midi_channel=self.track_id)
             self.update_audio_generator_settings()
         except Exception as e:
             logger.error(f"Track {self.track_id} audio generator init error: {e}")

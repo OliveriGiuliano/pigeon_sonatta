@@ -19,7 +19,7 @@ class AudioGenerator:
     """
     Generates MIDI instructions from video frames and synthesizes audio.
     """
-    def __init__(self, midi_out: pygame.midi.Output, config: Optional[AudioConfig] = None):
+    def __init__(self, midi_out: pygame.midi.Output, config: Optional[AudioConfig] = None, midi_channel: int = 0):
         """Initialize the audio generator."""
         self.config = config or AudioConfig()
         self.grid_width = self.config.DEFAULT_GRID_WIDTH
@@ -29,6 +29,8 @@ class AudioGenerator:
         self.root_note = self.config.ROOT_NOTE
         self.sensitivity = self.config.SENSITIVITY
         self.metric = self.config.DEFAULT_METRIC
+
+        self.midi_channel = midi_channel
 
         self.total_regions = self.grid_width * self.grid_height
         self.note_map = self._create_note_map()
@@ -224,9 +226,9 @@ class AudioGenerator:
         for action, note, velocity in midi_events:
             try:
                 if action == 'note_on':
-                    self.midi_out.note_on(note, velocity)
+                    self.midi_out.note_on(note, velocity, self.midi_channel)
                 elif action == 'note_off':
-                    self.midi_out.note_off(note, velocity)
+                    self.midi_out.note_off(note, velocity, self.midi_channel)
             except Exception as e:
                 logger.error(f"MIDI playback error: {e}")
     
@@ -255,7 +257,7 @@ class AudioGenerator:
             for note in list(self.current_notes.keys()):
                 try:
                     if self.midi_out:
-                        self.midi_out.note_off(note, self.current_notes[note])
+                        self.midi_out.note_off(note, self.current_notes[note], self.midi_channel)
                 except Exception as e:
                     logger.error(f"Error stopping note {note}: {e}")
             self.current_notes.clear()
