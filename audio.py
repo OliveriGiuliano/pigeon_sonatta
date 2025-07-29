@@ -29,7 +29,7 @@ class AudioGenerator:
         self.root_note = self.config.ROOT_NOTE
         self.sensitivity = self.config.SENSITIVITY
         self.metric = self.config.DEFAULT_METRIC
-
+        self.invert_metric = False
         self.midi_channel = midi_channel
 
         self.total_regions = self.grid_width * self.grid_height
@@ -175,9 +175,9 @@ class AudioGenerator:
                 idx += 1
         return values
 
-    def metric_to_velocity(self, brightness):
-        """Convert brightness value (0-1) to MIDI velocity (0-127)."""
-        velocity = int(brightness * 127 * (self.sensitivity))
+    def metric_to_velocity(self, metric):
+        """Convert metric value (0-1) to MIDI velocity (0-127)."""
+        velocity = int(metric * 127 * (self.sensitivity))
         return max(0, min(127, velocity))
     
     def generate_midi_events(self, metric_values: dict[int, float]) -> list[tuple[str, int, int]]:
@@ -188,7 +188,8 @@ class AudioGenerator:
             for region_index, metric_value in metric_values.items():
                 if region_index not in self.note_map:
                     continue
-                    
+                if self.invert_metric:
+                    metric_value = 1.0 - metric_value
                 note = self.note_map[region_index]
                 velocity = self.metric_to_velocity(metric_value)
                 
@@ -212,6 +213,11 @@ class AudioGenerator:
             self._current_notes_snapshot = self.current_notes.copy()
         
         return midi_events
+
+    def set_invert_metric(self, invert: bool):
+        """Set whether to invert the metric values."""
+        with self.state_lock:
+            self.invert_metric = invert
 
     def get_current_notes_snapshot(self):
         """Get a thread-safe snapshot of current notes for UI display."""

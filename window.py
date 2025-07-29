@@ -274,6 +274,10 @@ class MainWindow(tk.Tk):
         sensitivity_label.pack(side=tk.LEFT, padx=5)
         track.sensitivity_var.trace_add('write', lambda *args, label=sensitivity_label: self._on_sensitivity_change(label, *args))
 
+        ttk.Checkbutton(group, text="Invert Metric", 
+                        variable=track.invert_metric_var, 
+                        command=self.toggle_invert_metric).pack(pady=5)
+
         note_frame = ttk.Frame(group)
         note_frame.pack(pady=5, fill="x")
         ttk.Label(note_frame, text="Note Range:").pack(side=tk.LEFT)
@@ -645,6 +649,15 @@ class MainWindow(tk.Tk):
         if self.update_timer:
             self.after_cancel(self.update_timer)
         self.update_timer = self.after(150, self.update_track_settings)  # 150ms delay
+
+    def toggle_invert_metric(self, event=None):
+        """Toggles metric inversion for the active track."""
+        track = self.get_active_track()
+        if not track: return
+        
+        track.invert_metric = track.invert_metric_var.get()
+        if track.audio_generator:
+            track.audio_generator.set_invert_metric(track.invert_metric)
 
     def update_track_settings(self):
         """Update all settings for the active track from its UI widgets."""

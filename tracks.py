@@ -29,6 +29,8 @@ class MidiTrack:
         self.current_root_note = self.audio_config.ROOT_NOTE
         self.current_metric = self.audio_config.DEFAULT_METRIC
         self.audio_enabled = False
+        self.invert_metric = False
+
 
         # Tkinter variables for data binding
         self.grid_width_var = tk.StringVar(value=str(self.grid_width))
@@ -40,6 +42,7 @@ class MidiTrack:
         self.root_note_var = tk.StringVar(value=get_note_names()[self.current_root_note - 60])
         self.metric_var = tk.StringVar(value=self.current_metric)
         self.audio_enabled_var = tk.BooleanVar(value=self.audio_enabled)
+        self.invert_metric_var = tk.BooleanVar(value=False)
         
         self.audio_generator: Optional[AudioGenerator] = None
         self._init_audio_generator()
@@ -63,6 +66,7 @@ class MidiTrack:
         self.audio_generator.set_scale(self.current_scale, self.current_root_note)
         self.audio_generator.set_metric(self.current_metric)
         self.audio_generator.set_sensitivity(self.sensitivity)
+        self.audio_generator.set_invert_metric(self.invert_metric)
 
     def cleanup(self):
         """Cleans up resources for this track."""
