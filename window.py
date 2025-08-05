@@ -41,9 +41,9 @@ class MainWindow(tk.Tk):
         self.midi_out: Optional[pygame.midi.Output] = None 
         
         self.update_timer = None
-        self.grid_overlay_timer = None
+        self.grid_overlay_timer_id = None
 
-        self.current_camera_index = None  # Track active camer
+        self.current_camera_index = None  # Track active camera
         self.selected_midi_device_id = None
 
         self._initialize_global_audio() # Initialize audio systems once
@@ -57,8 +57,8 @@ class MainWindow(tk.Tk):
         
         self.add_track() # Add the first initial track
 
-        # Register cleanup
-        atexit.register(self.cleanup)
+        self._update_stats() # start stat update loop
+        self._process_ui_updates() # start ui update loop
 
     def _initialize_global_audio(self):
         """Initializes global Pygame systems and the single MIDI output stream."""
@@ -160,9 +160,6 @@ class MainWindow(tk.Tk):
         paned.add(video_area, weight=3)
         paned.add(control_panel, weight=1)
 
-        # Initialize video after frame is created and mapped
-        self.video_frame.bind("<Map>", self._init_video_manager)
-
     def _create_video_area(self, parent: ttk.Panedwindow) -> ttk.Frame:
         """Creates the frame containing the video panel and grid display."""
         self.video_frame = ttk.Frame(parent, relief=tk.SUNKEN)
@@ -220,23 +217,6 @@ class MainWindow(tk.Tk):
         ttk.Button(controls, text="Pause", command=self.pause_video).pack(side=tk.LEFT, padx=5)
         ttk.Button(controls, text="Stop", command=self.stop_video).pack(side=tk.LEFT, padx=5)
         ttk.Button(group, text="Reload Video", command=self.reload_video).pack(pady=5)
-
-    def on_metric_change(self, event=None):
-        """Handle metric selection change."""
-        self.current_metric = self.metric_var.get()
-        
-        # Update audio generator
-        if self.audio_generator:
-            self.audio_generator.set_metric(self.current_metric)
-        
-    def _on_sensitivity_change(self, *args):
-        """Handle sensitivity slider change."""
-        self.sensitivity = self.sensitivity_var.get()
-        self.sensitivity_label.config(text=f"{self.sensitivity:.1f}")
-        
-        # Update audio generator sensitivity
-        if self.audio_generator:
-            self.audio_generator.set_sensitivity(self.sensitivity)
 
     def _create_status_bar(self):
         status_bar = ttk.Frame(self, relief=tk.SUNKEN)
@@ -419,8 +399,8 @@ class MainWindow(tk.Tk):
             self.video_manager.play()
             self.status_msg.config(text=f"Playing: {os.path.basename(path)}")
                 
-            self.after(100, self._update_stats)
-            self.after(50, self._process_ui_updates)
+            #self.after(100, self._update_stats)
+            #self.after(50, self._process_ui_updates)
         except Exception as e:
             logger.error(f"Playback error: {e}")
             self.status_msg.config(text=f"Playback error: {e}")
@@ -448,7 +428,7 @@ class MainWindow(tk.Tk):
     def play_video(self):
         if self.video_manager:
             self.video_manager.play()
-            self.after(100, self._update_stats)
+            #self.after(100, self._update_stats)
 
     def pause_video(self):
         if self.video_manager:
@@ -489,9 +469,9 @@ class MainWindow(tk.Tk):
 
     def _update_grid_overlay(self):
         """Re-draw grid lines and flashing notes for the active track."""
-        if self.grid_overlay_timer:
-            self.after_cancel(self.grid_overlay_timer)
-            self.grid_overlay_timer = None
+        if self.grid_overlay_timer_id:
+            self.after_cancel(self.grid_overlay_timer_id)
+            self.grid_overlay_timer_id = None
      
         start_time = time.time()
         update_interval = 50  # ms
@@ -503,7 +483,7 @@ class MainWindow(tk.Tk):
         active_track = self.get_active_track()
         
         if not active_track or w <= 1 or h <= 1:
-            self.after(update_interval, self._update_grid_overlay)
+            self.grid_overlay_timer_id = self.after(update_interval, self._update_grid_overlay)
             return
         
         gw, gh = active_track.grid_width, active_track.grid_height
@@ -521,7 +501,7 @@ class MainWindow(tk.Tk):
         if active_track.audio_generator:
             self._draw_active_notes(active_track.audio_generator, gw, gh, cell_w, cell_h)
 
-        self.grid_overlay_timer = self.after(update_interval, self._update_grid_overlay)
+        self.grid_overlay_timer_id = self.after(update_interval, self._update_grid_overlay)
 
     def _draw_active_notes(self, audio_generator: AudioGenerator, gw, gh, cell_w, cell_h):
         """Draw active notes for a specific audio generator."""
@@ -603,9 +583,9 @@ class MainWindow(tk.Tk):
         self.tracks.pop(selected_index)
         self.track_notebook.forget(selected_index)
         
-        if self.grid_overlay_timer:
-            self.after_cancel(self.grid_overlay_timer)
-        self.grid_overlay_timer = self.after(50, self._update_grid_overlay)
+        if self.grid_overlay_timer_id:
+            self.after_cancel(self.grid_overlay_timer_id)
+        self.grid_overlay_timer_id = self.after(50, self._update_grid_overlay)
 
     def on_track_selected(self, event=None):
         """Handles switching between track tabs."""
@@ -616,9 +596,9 @@ class MainWindow(tk.Tk):
             new_index = self.track_notebook.index(self.track_notebook.select())
             if new_index != self.active_track_index:
                 self.active_track_index = new_index
-                if self.grid_overlay_timer:
-                    self.after_cancel(self.grid_overlay_timer)
-                self.grid_overlay_timer = self.after(0, self._update_grid_overlay)
+                if self.grid_overlay_timer_id:
+                    self.after_cancel(self.grid_overlay_timer_id)
+                self.grid_overlay_timer_id = self.after(0, self._update_grid_overlay)
         except (tk.TclError, IndexError):
             self.active_track_index = -1
 
@@ -766,12 +746,11 @@ class MainWindow(tk.Tk):
         try:
             self.video_manager.play()
             self.status_msg.config(text=f"Camera {camera_index}")
-            self.after(100, self._update_stats)
-            self.after(50, self._process_ui_updates)
+            #self.after(100, self._update_stats)
+            #self.after(50, self._process_ui_updates)
         except Exception as e:
             logger.error(f"Camera playback error: {e}")
             self.status_msg.config(text=f"Playback error: {e}")
-
 
     def _populate_midi_devices(self):
         """Populates the MIDI output device menu."""
