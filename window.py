@@ -330,8 +330,6 @@ class MainWindow(tk.Tk):
         # Placeholder
         pass
 
-
-
     def _init_video_manager(self, event=None):
         """Initialize Video manager only once and when frame is ready."""
         if not self.video_manager:
@@ -403,8 +401,6 @@ class MainWindow(tk.Tk):
             self.video_manager.play()
             self.status_msg.config(text=f"Playing: {os.path.basename(path)}")
                 
-            #self.after(100, self._update_stats)
-            #self.after(50, self._process_ui_updates)
         except Exception as e:
             logger.error(f"Playback error: {e}")
             self.status_msg.config(text=f"Playback error: {e}")
@@ -432,7 +428,6 @@ class MainWindow(tk.Tk):
     def play_video(self):
         if self.video_manager:
             self.video_manager.play()
-            #self.after(100, self._update_stats)
 
     def pause_video(self):
         if self.video_manager:
@@ -770,8 +765,7 @@ class MainWindow(tk.Tk):
         try:
             self.video_manager.play()
             self.status_msg.config(text=f"Camera {camera_index}")
-            #self.after(100, self._update_stats)
-            #self.after(50, self._process_ui_updates)
+
         except Exception as e:
             logger.error(f"Camera playback error: {e}")
             self.status_msg.config(text=f"Playback error: {e}")
@@ -959,11 +953,6 @@ class MainWindow(tk.Tk):
     def __enter__(self):
         """Context manager entry."""
         return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit with guaranteed cleanup."""
-        self.cleanup()
-        return False
 
     def cleanup(self):
         """Clean up resources with proper error handling."""
