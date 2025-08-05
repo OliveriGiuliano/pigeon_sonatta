@@ -47,6 +47,8 @@ class MidiTrack:
         self.note_on_threshold_var = tk.DoubleVar(value=self.audio_config.NOTE_ON_THRESHOLD)
         self.note_off_threshold_var = tk.DoubleVar(value=self.audio_config.NOTE_OFF_THRESHOLD)
         
+        self.custom_note_mapping = {}  # region_index -> note (-1 for disabled, 0-127 for MIDI notes)
+
         self.audio_generator: Optional[AudioGenerator] = None
         self._init_audio_generator()
 
@@ -60,6 +62,9 @@ class MidiTrack:
             logger.error(f"Track {self.track_id} audio generator init error: {e}")
             messagebox.showerror("Audio Error", f"Failed to initialize audio for Track {self.track_id}:\n{e}")
             
+    def reset_custom_note_map(self):
+        self.audio_generator.custom_note_mapping = {}
+
     def update_audio_generator_settings(self):
         """Applies all current settings to the audio generator instance."""
         if not self.audio_generator:

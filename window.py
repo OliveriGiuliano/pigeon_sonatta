@@ -177,6 +177,7 @@ class MainWindow(tk.Tk):
         
         self.grid_canvas = tk.Canvas(self.grid_frame, highlightthickness=0)
         self.grid_canvas.pack(fill=tk.BOTH, expand=True)
+        self.grid_canvas.bind("<Button-1>", self._on_grid_click)
         
         return self.video_frame
 
@@ -316,7 +317,8 @@ class MainWindow(tk.Tk):
         ttk.Spinbox(size_frame, from_=1, to=127, width=5, textvariable=track.grid_width_var).pack(side=tk.LEFT, padx=5)
         ttk.Label(size_frame, text="Height:").pack(side=tk.LEFT, padx=(10, 0))
         ttk.Spinbox(size_frame, from_=1, to=127, width=5, textvariable=track.grid_height_var).pack(side=tk.LEFT, padx=5)
-        
+        ttk.Button(size_frame, text="Reset custom notes", command=track.reset_custom_note_map).pack(side=tk.LEFT, padx=5)
+
         track.grid_width_var.trace_add('write', lambda *_: self._debounced_update_track_settings())
         track.grid_height_var.trace_add('write', lambda *_: self._debounced_update_track_settings())
 
@@ -327,6 +329,8 @@ class MainWindow(tk.Tk):
     def _menu_action(self):
         # Placeholder
         pass
+
+
 
     def _init_video_manager(self, event=None):
         """Initialize Video manager only once and when frame is ready."""
@@ -514,7 +518,27 @@ class MainWindow(tk.Tk):
         with audio_generator.state_lock:
             note_map_copy = audio_generator.note_map.copy()
         
-        for region_index, note in note_map_copy.items():
+        active_track = self.get_active_track()
+        
+        for region_index in range(gw * gh):
+            # Determine the note for this region
+            if active_track and region_index in active_track.audio_generator.custom_note_mapping:
+                note = active_track.audio_generator.custom_note_mapping[region_index]
+                if note == -1:  # Disabled region
+                    # Draw disabled region
+                    row, col = divmod(region_index, gw)
+                    x1, y1 = col * cell_w, row * cell_h
+                    x2, y2 = x1 + cell_w, y1 + cell_h
+                    self.grid_canvas.create_rectangle(x1 + 1, y1 + 1, x2 - 1, y2 - 1, 
+                                                    fill='gray', outline='', width=0)
+                    x_text, y_text = x1 + cell_w // 2, y1 + cell_h // 2
+                    self.grid_canvas.create_text(x_text, y_text, text="OFF", fill='white', font=('Arial', 8))
+                    continue
+            elif region_index in note_map_copy:
+                note = note_map_copy[region_index]
+            else:
+                continue
+                
             if note in current_notes_snapshot:
                 velocity = current_notes_snapshot[note]
                 intensity = 255 - min(255, velocity * 2)
@@ -814,6 +838,123 @@ class MainWindow(tk.Tk):
                 track.note_off_threshold = new_threshold
                 if track.audio_generator:
                     track.audio_generator.config.NOTE_OFF_THRESHOLD = new_threshold
+
+    def _on_grid_click(self, event):
+        """Handle clicks on the grid canvas."""
+        active_track = self.get_active_track()
+        if not active_track:
+            return
+            
+        # Calculate which region was clicked
+        w = self.grid_canvas.winfo_width()
+        h = self.grid_canvas.winfo_height()
+        
+        if w <= 1 or h <= 1:
+            return
+            
+        gw, gh = active_track.grid_width, active_track.grid_height
+        cell_w, cell_h = w // gw, h // gh
+        
+        clicked_col = event.x // cell_w
+        clicked_row = event.y // cell_h
+        
+        # Bounds check
+        if clicked_col >= gw or clicked_row >= gh:
+            return
+            
+        region_index = clicked_row * gw + clicked_col
+        
+        # Show note selection menu
+        self._show_note_selection_menu(event.x_root, event.y_root, region_index)
+
+    def _show_note_selection_menu(self, x, y, region_index):
+        """Show a dropdown menu to select note for the clicked region."""
+        active_track = self.get_active_track()
+        if not active_track:
+            return
+            
+        # Create popup menu
+        popup = tk.Menu(self, tearoff=0)
+        
+        # Add "Disable" option
+        popup.add_command(label="Disable (-1)", 
+                        command=lambda: self._set_region_note(region_index, -1))
+        popup.add_separator()
+        
+        # Add note options (0-127)
+        # Group by octaves for better organization
+        for octave in range(11):  # 0-10 covers MIDI range
+            octave_menu = tk.Menu(popup, tearoff=0)
+            start_note = octave * 12
+            end_note = min(127, start_note + 11)
+            
+            for note in range(start_note, end_note + 1):
+                note_name = self._get_note_name(note)
+                octave_menu.add_command(label=f"{note_name} ({note})",
+                                    command=lambda n=note: self._set_region_note(region_index, n))
+            
+            popup.add_cascade(label=f"Octave {octave} ({start_note}-{end_note})", menu=octave_menu)
+        
+        # Show current selection
+        current_note = self._get_current_region_note(region_index)
+        if current_note == -1:
+            popup.add_separator()
+            popup.add_command(label="Current: Disabled", state="disabled")
+        else:
+            note_name = self._get_note_name(current_note)
+            popup.add_separator()
+            popup.add_command(label=f"Current: {note_name} ({current_note})", state="disabled")
+        
+        try:
+            popup.tk_popup(x, y)
+        finally:
+            popup.grab_release()
+
+    def _set_region_note(self, region_index, note):
+        """Set the note for a specific region."""
+        active_track = self.get_active_track()
+        if not active_track:
+            return
+            
+        if note == -1:
+            # Disable region
+            active_track.audio_generator.custom_note_mapping[region_index] = -1
+        else:
+            # Set specific note
+            active_track.audio_generator.custom_note_mapping[region_index] = note
+        
+        # Update audio generator if it exists
+        if active_track.audio_generator:
+            active_track.audio_generator.set_custom_note_mapping(region_index, note)
+        
+        # Refresh grid overlay
+        self._update_grid_overlay()
+
+    def _get_current_region_note(self, region_index):
+        """Get the current note for a region."""
+        active_track = self.get_active_track()
+        if not active_track:
+            return 0
+            
+        # Check custom mapping first
+        if region_index in active_track.audio_generator.custom_note_mapping:
+            return active_track.audio_generator.custom_note_mapping[region_index]
+        
+        # Fall back to default mapping
+        if active_track.audio_generator and region_index in active_track.audio_generator.note_map:
+            return active_track.audio_generator.note_map[region_index]
+        
+        return 0
+
+    def _get_note_name(self, note_number):
+        """Convert MIDI note number to note name."""
+        if note_number < 0 or note_number > 127:
+            return "Invalid"
+        
+        note_names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+        octave = note_number // 12
+        note = note_names[note_number % 12]
+        return f"{note}{octave}"
 
     def __enter__(self):
         """Context manager entry."""

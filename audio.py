@@ -41,6 +41,8 @@ class AudioGenerator:
         self.state_lock = threading.RLock()
         self._current_notes_snapshot: dict[int, int] = {}
         
+        self.custom_note_mapping = {}
+
         if self.midi_out is not None:
             self.is_initialized = True
             logger.info("AudioGenerator successfully linked to shared MIDI output.")
@@ -185,27 +187,58 @@ class AudioGenerator:
         midi_events = []
         
         with self.state_lock:
-            for region_index, metric_value in metric_values.items():
-                if region_index not in self.note_map:
-                    continue
-                if self.invert_metric:
-                    metric_value = 1.0 - metric_value
-                note = self.note_map[region_index]
-                velocity = self.metric_to_velocity(metric_value)
+            # First, build a complete mapping of region -> note for this frame
+            region_to_note = {}
+            for region_index in metric_values.keys():
+                # Check for custom note mapping first
+                if hasattr(self, 'custom_note_mapping') and region_index in self.custom_note_mapping:
+                    note = self.custom_note_mapping[region_index]
+                    if note == -1:  # Disabled region
+                        continue
+                    region_to_note[region_index] = note
+                elif region_index in self.note_map:
+                    region_to_note[region_index] = self.note_map[region_index]
+            
+            # Build reverse mapping: note -> list of regions that want to play it
+            note_to_regions = {}
+            for region_index, note in region_to_note.items():
+                if note not in note_to_regions:
+                    note_to_regions[note] = []
+                note_to_regions[note].append(region_index)
+            
+            # For each note, determine if it should play based on ANY of its regions
+            for note, regions in note_to_regions.items():
+                # Find the maximum metric value across all regions for this note
+                max_metric = 0
+                max_velocity = 0
+                should_play = False
+                
+                for region_index in regions:
+                    if region_index in metric_values:
+                        metric_value = metric_values[region_index]
+                        if self.invert_metric:
+                            metric_value = 1.0 - metric_value
+                        
+                        velocity = self.metric_to_velocity(metric_value)
+                        
+                        if metric_value > self.config.NOTE_ON_THRESHOLD:
+                            should_play = True
+                            if metric_value > max_metric:
+                                max_metric = metric_value
+                                max_velocity = velocity
                 
                 is_playing = note in self.current_notes
-                should_play = metric_value > self.config.NOTE_ON_THRESHOLD
-                should_stop = metric_value <= self.config.NOTE_OFF_THRESHOLD
-
+                should_stop = max_metric <= self.config.NOTE_OFF_THRESHOLD
+                
                 if should_play and not is_playing:
-                    midi_events.append(('note_on', note, velocity))
-                    self.current_notes[note] = velocity
+                    midi_events.append(('note_on', note, max_velocity))
+                    self.current_notes[note] = max_velocity
                 elif should_play and is_playing:
                     current_velocity = self.current_notes[note]
-                    if abs(velocity - current_velocity) > self.config.VELOCITY_CHANGE_THRESHOLD:
+                    if abs(max_velocity - current_velocity) > self.config.VELOCITY_CHANGE_THRESHOLD:
                         midi_events.append(('note_off', note, current_velocity))
-                        midi_events.append(('note_on', note, velocity))
-                        self.current_notes[note] = velocity
+                        midi_events.append(('note_on', note, max_velocity))
+                        self.current_notes[note] = max_velocity
                 elif should_stop and is_playing:
                     midi_events.append(('note_off', note, self.current_notes.get(note, 0)))
                     del self.current_notes[note]
@@ -213,6 +246,12 @@ class AudioGenerator:
             self._current_notes_snapshot = self.current_notes.copy()
         
         return midi_events
+
+    def set_custom_note_mapping(self, region_index: int, note: int):
+        """Set custom note mapping for a specific region. Use -1 to disable."""
+        if not hasattr(self, 'custom_note_mapping'):
+            self.custom_note_mapping = {}
+        self.custom_note_mapping[region_index] = note
 
     def set_invert_metric(self, invert: bool):
         """Set whether to invert the metric values."""
@@ -343,6 +382,7 @@ class AudioGenerator:
         
         return vis_frame
     
+
     def set_sensitivity(self, sensitivity: float):
         """Set sensitivity multiplier for MIDI generation."""
         with self.state_lock:
