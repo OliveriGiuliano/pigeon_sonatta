@@ -163,10 +163,10 @@ class VideoManager:
         self.cleanup()
 
     def _decoder_loop(self):
-        """Decodes frames and pushes them as NumPy arrays to consumer queues."""
-        frame_delay = 1.0 / self.fps if self.fps > 0 else 1/30.0
-        next_frame_time = time.time()
-
+        # Get start time for PTS synchronization
+        start_time = time.perf_counter()
+        first_pts = None
+        
         for frame in self.container.decode(video=0):
             if self.stop_event.is_set():
                 break
@@ -175,51 +175,52 @@ class VideoManager:
                 if self.stop_event.is_set():
                     break
                 time.sleep(0.01)
-
+            
             try:
-                # Decode directly to a NumPy array
                 frame_np = frame.to_ndarray(format='rgb24')
+                
+                # ✅ SYNCHRONIZE TO PTS
+                if first_pts is None:
+                    first_pts = frame.pts
+                    start_time = time.perf_counter()
+                
+                # Calculate when this frame should be shown
+                pts_offset = (frame.pts - first_pts) * self.video_stream.time_base
+                target_time = start_time + pts_offset
+                
+                # Sleep until the frame's presentation time
+                sleep_time = target_time - time.perf_counter()
+                if sleep_time > 0.001:
+                    time.sleep(sleep_time)
+                
                 self.current_time = frame.pts * self.video_stream.time_base
-
-                # Push NumPy array to queues (non-blocking)
+                
+                # Push to queues (same as before)
                 try:
                     self.display_queue.put_nowait(frame_np)
                 except queue.Full:
-                    # Drop frames if display can't keep up
                     pass
                     
                 if self.frame_callback:
                     try:
                         self.processing_queue.put_nowait(frame_np)
                     except queue.Full:
-                        # Processing queue is full. Drop the oldest frame to make space for the newest one.
-                        logger.warning("Processing queue full; dropping oldest frame to prioritize recent data.")
                         try:
-                            # Remove the oldest frame.
                             self.processing_queue.get_nowait()
-                            # Add the new frame.
                             self.processing_queue.put_nowait(frame_np)
                         except (queue.Empty, queue.Full):
-                            # This is a defensive catch for rare race conditions.
-                            # If it occurs, this new frame is simply dropped.
                             pass
 
-                # More precise timing
-                next_frame_time += frame_delay
-                sleep_time = next_frame_time - time.time()
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
-                else:
-                    # We're behind, reset timing
-                    next_frame_time = time.time()
-                    
+                if self._frame_count % 300 == 0:  # Every ~10 seconds
+                    actual_time = time.perf_counter() - start_time
+                    expected_time = (frame.pts - first_pts) * self.video_stream.time_base
+                    drift = actual_time - expected_time
+                    if abs(drift) > 0.5:  # Warn if drift >0.5s
+                        logger.warning(f"Timing drift: {drift:.2f}s")
+
             except Exception as e:
                 logger.error(f"Decoder loop error: {e}")
                 break
-        
-        with self._state_condition:
-            self._is_playing = False
-            self._state_condition.notify_all()
 
     def _display_loop(self):
         """Displays frames from NumPy arrays in the display queue."""
