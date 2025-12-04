@@ -163,9 +163,9 @@ class VideoManager:
         self.cleanup()
 
     def _decoder_loop(self):
-        # Get start time for PTS synchronization
         start_time = time.perf_counter()
         first_pts = None
+        frames_behind = 0
         
         for frame in self.container.decode(video=0):
             if self.stop_event.is_set():
@@ -177,30 +177,47 @@ class VideoManager:
                 time.sleep(0.01)
             
             try:
-                frame_np = frame.to_ndarray(format='rgb24')
-                
-                # ✅ SYNCHRONIZE TO PTS
+                # Initialize timing on first frame
                 if first_pts is None:
                     first_pts = frame.pts
                     start_time = time.perf_counter()
                 
-                # Calculate when this frame should be shown
+                # Calculate when this frame should be displayed
                 pts_offset = (frame.pts - first_pts) * self.video_stream.time_base
                 target_time = start_time + pts_offset
+                current_time = time.perf_counter()
                 
-                # Sleep until the frame's presentation time
-                sleep_time = target_time - time.perf_counter()
-                if sleep_time > 0.001:
-                    time.sleep(sleep_time)
+                # Check if we're behind schedule
+                time_until_display = target_time - current_time
                 
+                if time_until_display < -0.1:  # More than 100ms behind
+                    # We're too far behind - skip this frame
+                    frames_behind += 1
+                    if frames_behind % 10 == 0:
+                        logger.warning(f"Skipped {frames_behind} frames due to processing lag")
+                    continue
+                
+                frames_behind = 0  # Reset counter when caught up
+                
+                # Sleep until it's time to display this frame
+                if time_until_display > 0.001:
+                    time.sleep(time_until_display)
+                
+                # Convert frame
+                frame_np = frame.to_ndarray(format='rgb24')
                 self.current_time = frame.pts * self.video_stream.time_base
                 
-                # Push to queues (same as before)
+                # Non-blocking queue puts with frame dropping if full
                 try:
                     self.display_queue.put_nowait(frame_np)
                 except queue.Full:
-                    pass
-                    
+                    # Drop oldest frame and try again
+                    try:
+                        self.display_queue.get_nowait()
+                        self.display_queue.put_nowait(frame_np)
+                    except (queue.Empty, queue.Full):
+                        pass
+                        
                 if self.frame_callback:
                     try:
                         self.processing_queue.put_nowait(frame_np)
@@ -210,13 +227,6 @@ class VideoManager:
                             self.processing_queue.put_nowait(frame_np)
                         except (queue.Empty, queue.Full):
                             pass
-
-                if self._frame_count % 300 == 0:  # Every ~10 seconds
-                    actual_time = time.perf_counter() - start_time
-                    expected_time = (frame.pts - first_pts) * self.video_stream.time_base
-                    drift = actual_time - expected_time
-                    if abs(drift) > 0.5:  # Warn if drift >0.5s
-                        logger.warning(f"Timing drift: {drift:.2f}s")
 
             except Exception as e:
                 logger.error(f"Decoder loop error: {e}")
@@ -286,9 +296,11 @@ class VideoManager:
             try:
                 frame_rgb = self.processing_queue.get(timeout=0.5)
                 
-                # Check for sentinel value (cleanup signal)
                 if frame_rgb is None:
                     break
+                
+                # Measure processing latency
+                processing_start = time.time()
                 
                 # Update FPS counter
                 self._frame_count += 1
@@ -298,7 +310,6 @@ class VideoManager:
                     self._frame_count = 0
                     self._frame_count_start_time = time.time()
                 
-                # Convert directly to grayscale
                 frame_gray = frame_rgb
 
                 if self.frame_callback:
@@ -306,6 +317,9 @@ class VideoManager:
                         self.frame_callback(frame_gray)
                     except Exception as e:
                         logger.error(f"Frame callback error: {e}")
+                
+                # Calculate actual latency
+                self.processing_latency = time.time() - processing_start
 
             except queue.Empty:
                 if not self._is_playing and not self.pause_event.is_set():
